@@ -17,6 +17,7 @@ end
 local state = {
     alive = true,
     auto = false,
+    autoRespawn = true,
     antiSit = true,
     antiFall = true,
     freeze = false,
@@ -112,6 +113,80 @@ local function countCollected(eventData, folder)
         end
     end
     return count
+end
+
+local function findRespawnButton()
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    for _, button in ipairs(playerGui:GetDescendants()) do
+        local isVisible = button:IsA("GuiButton") and button.Visible and button.Active
+        local ancestor = button.Parent
+        while isVisible and ancestor and ancestor ~= playerGui do
+            if ancestor:IsA("GuiObject") and not ancestor.Visible then
+                isVisible = false
+            elseif ancestor:IsA("ScreenGui") and not ancestor.Enabled then
+                isVisible = false
+            end
+            ancestor = ancestor.Parent
+        end
+        if isVisible then
+            local labels = {}
+            if button:IsA("TextButton") then table.insert(labels, button.Text) end
+            for _, child in ipairs(button:GetDescendants()) do
+                if child:IsA("TextLabel") or child:IsA("TextButton") then
+                    table.insert(labels, child.Text)
+                end
+            end
+            for _, label in ipairs(labels) do
+                local normalized = string.lower(label)
+                if string.find(normalized, "возродить конфет", 1, true)
+                    or (string.find(normalized, "respawn", 1, true)
+                        and (string.find(normalized, "candy", 1, true)
+                            or string.find(normalized, "candies", 1, true))) then
+                    return button
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function useOfficialRespawn(folder, week)
+    if not state.autoRespawn then return false end
+    local button = findRespawnButton()
+    if not button then
+        say("Кнопка игрового возрождения конфет сейчас недоступна")
+        return false
+    end
+
+    local ok = pcall(function() button:Activate() end)
+    if not ok then
+        say("Не удалось нажать кнопку возрождения в игровом интерфейсе")
+        return false
+    end
+    say("Нажата штатная кнопка события · жду новые конфеты")
+
+    local deadline = os.clock() + 6
+    repeat
+        task.wait(0.25)
+        if not state.alive or not state.auto then return false end
+        local data = getEventData()
+        local currentFolder, currentWeek = weekFolder(data)
+        if currentFolder ~= folder or currentWeek ~= week then
+            say("Неделя события изменилась; автоповтор остановлен")
+            return false
+        end
+        for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
+            if candy:IsA("BasePart") and candy:IsDescendantOf(folder) and not isCollected(data, candy.Name) then
+                say("Новые конфеты появились · продолжаю сбор")
+                return true
+            end
+        end
+    until os.clock() >= deadline
+
+    say("После нажатия игровые данные не показали новых конфет; автоповтор остановлен")
+    return false
 end
 
 local function updateStat()
@@ -232,11 +307,11 @@ local function collectPass(runId)
 
     if #candies == 0 then
         if skippedUnsafe > 0 then
-            say("Остались только точки без безопасной опоры; маршрут остановлен")
+            say("Остались только небезопасные точки; проверяю штатную кнопку возрождения")
         else
             say("В неделе " .. week .. " все конфеты уже собраны")
         end
-        return
+        return "empty", folder, week
     end
     local total = #candies
     local visited = 0
@@ -361,7 +436,9 @@ local function collectPass(runId)
                 })
             end)
         end
+        return remaining == 0 and "empty" or "done", finalFolder, week
     end
+    return "stopped", folder, week
 end
 
 function state.cleanup()
@@ -449,10 +526,15 @@ state.autoToggle = collectTab:CreateToggle({
         if enabled then
             local runId = state.generation
             task.spawn(function()
-                local ok, err = pcall(collectPass, runId)
+                local ok, err = pcall(function()
+                    while state.alive and state.auto and runId == state.generation do
+                        local result, folder, week = collectPass(runId)
+                        if result ~= "empty" or not state.auto then break end
+                        if not useOfficialRespawn(folder, week) then break end
+                    end
+                end)
                 if not ok and state.alive then
                     say("Ошибка сбора: " .. tostring(err))
-                    cancelRun()
                 end
                 if state.alive and runId == state.generation then
                     state.auto = false
@@ -462,6 +544,17 @@ state.autoToggle = collectTab:CreateToggle({
         else
             say("Автосбор остановлен")
         end
+    end,
+})
+
+collectTab:CreateToggle({
+    name = "Авто-возрождение конфет",
+    description = "Когда доступна, нажимает штатную кнопку события и ждёт подтверждения новых конфет",
+    value = true,
+    flag = "AutoRespawnCandy",
+    callback = function(enabled)
+        state.autoRespawn = enabled
+        say(enabled and "Авто-возрождение включено" or "Авто-возрождение выключено")
     end,
 })
 
@@ -918,3 +1011,4 @@ connect(state.connections, RunService.Heartbeat:Connect(function()
 end))
 
 say("Atomick AutoFarm готов");
+
