@@ -38,6 +38,7 @@ local state = {
     miniStartButton = nil,
     miniConnections = {},
     miniTweens = {},
+    miniProgressTween = nil,
     fullVisible = true,
 }
 env.__BrookhavenCandyState = state
