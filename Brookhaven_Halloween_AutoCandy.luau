@@ -27,24 +27,15 @@ local state = {
     anchoredRoots = {},
     lastSafeCFrame = nil,
     recovering = false,
-    window = nil,
-    log = nil,
-    stat = nil,
-    autoToggle = nil,
-    miniGui = nil,
-    miniStatusLabel = nil,
-    miniCountLabel = nil,
-    miniProgressFill = nil,
-    miniStartButton = nil,
-    miniConnections = {},
-    miniTweens = {},
-    miniProgressTween = nil,
-    fullVisible = true,
+    ui = nil,
+    uiConnections = {},
+    currentStatus = "Готов к запуску",
+    lastCandyResetAt = -100,
 }
 env.__BrookhavenCandyState = state
 
 local player = Players.LocalPlayer
-local updateMini
+local updateUI
 
 local function connect(list, connection)
     table.insert(list, connection)
@@ -66,10 +57,8 @@ end
 
 local function say(message)
     if not state.alive then return end
-    if state.log then
-        pcall(function() state.log:Append(os.date("%H:%M:%S") .. "  " .. message) end)
-    end
-    if updateMini then pcall(updateMini, message) end
+    state.currentStatus = message
+    if updateUI then pcall(updateUI, message) end
     print("[Candy Corn] " .. message)
 end
 
@@ -206,11 +195,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
 end
 
 local function updateStat()
-    local data = getEventData()
-    local folder = weekFolder(data)
-    if data and folder and state.stat then
-        pcall(function() state.stat:Set(countCollected(data, folder)) end)
-    end
+    if updateUI then pcall(updateUI) end
 end
 
 local function setAnchored(root, enabled)
@@ -280,11 +265,6 @@ local function hasGroundSupport(item)
     if not hit or hit.Normal.Y < 0.45 then return false end
     return item.Position.Y - hit.Position.Y <= 8
 end
-local function cancelRun()
-    state.auto = false
-    state.generation += 1
-    if state.autoToggle then state.autoToggle:Set(false, true) end
-end
 
 local function collectPass(runId)
     local data = getEventData()
@@ -310,9 +290,6 @@ local function collectPass(runId)
         end
     end
 
-    if state.stat then
-        pcall(function() state.stat:Set(countCollected(data, folder)) end)
-    end
     local skippedUnsafe = 0
     for i = #candies, 1, -1 do
         local item = candies[i]
@@ -461,14 +438,6 @@ local function collectPass(runId)
         end
 
         say("Обход завершён · осталось " .. remaining)
-        if state.window then
-            pcall(function()
-                state.window:Notify({
-                    title = "Сбор завершён",
-                    content = "Подтверждённых остатков: " .. remaining,
-                })
-            end)
-        end
         -- Every available target was visited. Even if progress is 58/60,
         -- no new candidates remain on this pass, so try the reset remote.
         return "empty", finalFolder, week, considered
@@ -481,8 +450,10 @@ function state.cleanup()
     state.alive = false
     state.auto = false
     state.generation += 1
+
     disconnectAll(state.characterConnections)
     disconnectAll(state.connections)
+    disconnectAll(state.uiConnections)
 
     for root, originalAnchored in pairs(state.anchoredRoots) do
         if root and root.Parent then
@@ -491,531 +462,456 @@ function state.cleanup()
     end
     table.clear(state.anchoredRoots)
 
-    disconnectAll(state.miniConnections)
-    for _, tween in ipairs(state.miniTweens) do pcall(function() tween:Cancel() end) end
-    table.clear(state.miniTweens)
-    if state.miniProgressTween then pcall(function() state.miniProgressTween:Cancel() end) end
-    if state.miniGui then pcall(function() state.miniGui:Destroy() end); state.miniGui = nil end
-
-    if state.window and not state.window.unloaded then
-        pcall(function() state.window:Unload() end)
+    if state.ui then
+        local ui = state.ui
+        for _, effect in ipairs(ui.tweens) do
+            pcall(function() effect:Cancel() end)
+        end
+        if ui.progressTween then pcall(function() ui.progressTween:Cancel() end) end
+        if ui.pulseTween then pcall(function() ui.pulseTween:Cancel() end) end
+        if ui.buttonTween then pcall(function() ui.buttonTween:Cancel() end) end
+        pcall(function() ui.gui:Destroy() end)
+        state.ui = nil
     end
 end
 
-local Rayfield
-local loaded, loadError = pcall(function()
-    Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
-end)
-if not loaded or not Rayfield then
-    warn("Rayfield Gen2 не загрузился: " .. tostring(loadError))
-    state.alive = false
-    return
+-- One-button, native Roblox interface. No GUI library or external HTTP request.
+local function setAuto(enabled)
+    if not state.alive then return end
+    enabled = enabled == true
+    if state.auto == enabled then return end
+    if enabled and state.freeze then
+        say("Сначала сними закрепление персонажа")
+        return
+    end
+
+    state.auto = enabled
+    state.generation += 1
+    if not enabled then
+        say("Сбор остановлен")
+        return
+    end
+
+    say("Запускаю сбор конфет...")
+    local runId = state.generation
+    task.spawn(function()
+        local ok, err = pcall(function()
+            while state.alive and state.auto and runId == state.generation do
+                local result, folder, week, considered = collectPass(runId)
+                if result ~= "empty" or not state.auto then break end
+                local resetResult = useOfficialRespawn(folder, week, runId, considered)
+                if resetResult == "rescan" then
+                    task.wait(0.25)
+                elseif resetResult ~= true then
+                    break
+                end
+            end
+        end)
+        if not ok and state.alive then
+            say("Ошибка сбора: " .. tostring(err))
+        end
+        if state.alive and runId == state.generation then
+            state.auto = false
+            if updateUI then pcall(updateUI) end
+        end
+    end)
 end
 
-local window = Rayfield:CreateWindow({
-    name = "Atomick AutoFarm",
-    subtitle = "Brookhaven · Halloween 2026",
-    sidebarLayout = true,
-    theme = "ember",
-    showName = "ATOMICK AUTOFARM",
-    showIconOnly = false,
-    configuration = {
-        autoSave = true,
-        autoLoad = true,
-        fileName = "BrookhavenHalloweenCandy",
-    },
-})
-state.window = window
-
-local collectTab = window:CreateTab({ name = "Сбор" })
-local safetyTab = window:CreateTab({ name = "Защита" })
-local settingsTab = window:CreateTab({ name = "Настройки" })
-
-state.log = collectTab:CreateConsole({
-    name = "Журнал",
-    text = "Готово · нажми «Автосбор», чтобы начать",
-    height = 150,
-    follow = true,
-    maxLines = 80,
-})
-state.stat = collectTab:CreateStat({
-    name = "Собрано на этой неделе",
-    value = 0,
-})
-updateStat()
-
-state.autoToggle = collectTab:CreateToggle({
-    name = "Автосбор недостающих конфет",
-    description = "Сверяет прогресс перед каждым перемещением",
-    value = false,
-    forgetState = true,
-    callback = function(enabled)
-        if enabled and state.freeze then
-            if state.autoToggle then state.autoToggle:Set(false, true) end
-            say("Сначала выключи закрепление персонажа")
-            return
-        end
-
-        state.auto = enabled
-        state.generation += 1
-        if enabled then
-            local runId = state.generation
-            task.spawn(function()
-                local ok, err = pcall(function()
-                    while state.alive and state.auto and runId == state.generation do
-                        local result, folder, week, considered = collectPass(runId)
-                        if result ~= "empty" or not state.auto then break end
-                        local resetResult = useOfficialRespawn(folder, week, runId, considered)
-                        if resetResult == "rescan" then
-                            task.wait(0.25)
-                        elseif resetResult ~= true then
-                            break
-                        end
-                    end
-                end)
-                if not ok and state.alive then
-                    say("Ошибка сбора: " .. tostring(err))
-                end
-                if state.alive and runId == state.generation then
-                    state.auto = false
-                    if state.autoToggle then state.autoToggle:Set(false, true) end
-                end
-            end)
-        else
-            say("Автосбор остановлен")
-        end
-    end,
-})
-
-collectTab:CreateToggle({
-    name = "Авто-возрождение конфет",
-    description = "Когда доступные конфеты закончились (даже 58/60), запрашивает сброс и проверяет обновление прогресса",
-    value = true,
-    flag = "AutoRespawnCandy",
-    callback = function(enabled)
-        state.autoRespawn = enabled
-        say(enabled and "Авто-возрождение включено" or "Авто-возрождение выключено")
-    end,
-})
-
-collectTab:CreateButton({
-    name = "Сбросить маршрут / пересканировать",
-    description = "Перезапускает поиск незачтённых конфет; прогресс события не сбрасывает",
-    callback = function()
-        if state.freeze then
-            say("Сними закрепление, чтобы пересканировать маршрут")
-            return
-        end
-        if state.auto then
-            cancelRun()
-            task.delay(0.12, function()
-                if state.alive and not state.freeze and state.autoToggle then state.autoToggle:Set(true) end
-            end)
-        elseif state.autoToggle then
-            state.autoToggle:Set(true)
-        end
-    end,
-})
-collectTab:CreateKeybind({
-    name = "Показать/скрыть меню",
-    value = Enum.KeyCode.RightShift,
-    callback = function()
-        if state.window and state.alive then
-            state.fullVisible = not state.fullVisible
-            state.window:ToggleHide()
-        end
-    end,
-})
-
-collectTab:CreateKeybind({
-    name = "Старт/стоп автосбора",
-    value = Enum.KeyCode.RightControl,
-    callback = function()
-        if state.autoToggle and state.alive then
-            state.autoToggle:Set(not state.autoToggle.value)
-        end
-    end,
-})
-
-safetyTab:CreateToggle({
-    name = "Анти-сидение",
-    description = "Автоматически встаёт, если персонаж сел",
-    value = true,
-    flag = "AntiSit",
-    callback = function(enabled)
-        state.antiSit = enabled
-        if enabled then
-            local _, _, humanoid = parts()
-            if humanoid and humanoid.Sit then
-                humanoid.Sit = false
-                pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end)
-            end
-        end
-        say(enabled and "Анти-сидение включено" or "Анти-сидение выключено")
-    end,
-})
-
-safetyTab:CreateToggle({
-    name = "Восстановление после падения",
-    description = "Возвращает к последней безопасной точке ниже Y = -30",
-    value = true,
-    flag = "AntiFall",
-    callback = function(enabled)
-        state.antiFall = enabled
-        say(enabled and "Защита от провала включена" or "Защита от провала выключена")
-    end,
-})
-
-safetyTab:CreateToggle({
-    name = "Закрепить персонажа",
-    description = "Удерживает на месте; автосбор при этом выключается",
-    value = false,
-    forgetState = true,
-    callback = function(enabled)
-        state.freeze = enabled
-        local _, root = parts()
-        if enabled then
-            if state.auto then cancelRun() end
-            if root then setAnchored(root, true) end
-            say("Персонаж закреплён")
-        else
-            if root then setAnchored(root, false) end
-            say("Закрепление выключено")
-        end
-    end,
-})
-
-safetyTab:CreateButton({
-    name = "Вернуться в безопасное место",
-    description = "К последней точке, где персонаж стоял на поверхности",
-    callback = function()
-        local _, root, humanoid = parts()
-        if not root or not state.lastSafeCFrame then
-            say("Безопасная точка ещё не сохранена")
-            return
-        end
-        root.Anchored = false
-        root.CFrame = state.lastSafeCFrame + Vector3.new(0, 4, 0)
-        root.AssemblyLinearVelocity = Vector3.zero
-        if humanoid then
-            pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end)
-        end
-        say("Возврат к безопасной точке выполнен")
-    end,
-})
-
-local telegramLink = "https://t.me/AT3M3"
-
-settingsTab:CreateButton({
-    name = "TG AT3M3 · скопировать ссылку",
-    description = "Копирует Telegram-ссылку в буфер обмена",
-    callback = function()
-        local ok = pcall(setclipboard, telegramLink)
-        if ok then
-            window:Notify({ title = "Ссылка скопирована", content = telegramLink })
-        else
-            say("Не удалось скопировать ссылку: setclipboard недоступен")
-        end
-    end,
-})
-
-settingsTab:CreateButton({
-    name = "Свернуть меню",
-    description = "Скрывает окно; RightShift снова покажет его",
-    callback = function()
-        if state.window and state.alive then
-            state.fullVisible = not state.fullVisible
-            state.window:ToggleHide()
-        end
-    end,
-})
-local function createMiniWidget()
-    local parent
+local function createUI()
+    local parent = player:WaitForChild("PlayerGui")
     if type(gethui) == "function" then
         local ok, hidden = pcall(gethui)
         if ok and hidden then parent = hidden end
     end
-    if not parent then
-        local ok, core = pcall(function() return game:GetService("CoreGui") end)
-        parent = ok and core or player:WaitForChild("PlayerGui")
-    end
 
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "AtomickAutoFarmMini"
-    gui.ResetOnSpawn = false
-    gui.IgnoreGuiInset = true
-    gui.DisplayOrder = 9000
-    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.Parent = parent
-    state.miniGui = gui
-
-    local card = Instance.new("Frame")
-    card.Name = "Card"
-    card.AnchorPoint = Vector2.new(0, 0.5)
-    card.Position = UDim2.new(0, 20, 0.58, 16)
-    card.Size = UDim2.new(0, 264, 0, 104)
-    card.BackgroundColor3 = Color3.fromRGB(18, 17, 25)
-    card.BackgroundTransparency = 1
-    card.BorderSizePixel = 0
-    card.ClipsDescendants = true
-    card.ZIndex = 10
-    card.Parent = gui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 15)
-    corner.Parent = card
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(244, 137, 67)
-    stroke.Transparency = 1
-    stroke.Thickness = 1.2
-    stroke.Parent = card
-    local gradient = Instance.new("UIGradient")
-    gradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 25, 34)),
-        ColorSequenceKeypoint.new(0.55, Color3.fromRGB(20, 19, 29)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(34, 20, 23)),
-    })
-    gradient.Rotation = 0
-    gradient.Parent = card
-
-    local accent = Instance.new("Frame")
-    accent.Position = UDim2.new(0, 8, 0, 11)
-    accent.Size = UDim2.new(0, 3, 1, -22)
-    accent.BackgroundColor3 = Color3.fromRGB(255, 145, 70)
-    accent.BorderSizePixel = 0
-    accent.ZIndex = 11
-    accent.Parent = card
-    local accentCorner = Instance.new("UICorner")
-    accentCorner.CornerRadius = UDim.new(1, 0)
-    accentCorner.Parent = accent
-
-    local title = Instance.new("TextButton")
-    title.Position = UDim2.new(0, 20, 0, 10)
-    title.Size = UDim2.new(0, 158, 0, 25)
-    title.BackgroundTransparency = 1
-    title.Text = "ATOMICK  /  AUTOFARM"
-    title.TextColor3 = Color3.fromRGB(255, 226, 205)
-    title.TextSize = 12
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.AutoButtonColor = false
-    title.ZIndex = 12
-    title.Parent = card
-
-    local status = Instance.new("TextLabel")
-    status.AnchorPoint = Vector2.new(1, 0)
-    status.Position = UDim2.new(1, -12, 0, 14)
-    status.Size = UDim2.new(0, 75, 0, 18)
-    status.BackgroundColor3 = Color3.fromRGB(42, 35, 35)
-    status.BorderSizePixel = 0
-    status.Text = "READY"
-    status.TextColor3 = Color3.fromRGB(255, 185, 124)
-    status.TextSize = 9
-    status.Font = Enum.Font.GothamBold
-    status.ZIndex = 12
-    status.Parent = card
-    local statusCorner = Instance.new("UICorner")
-    statusCorner.CornerRadius = UDim.new(1, 0)
-    statusCorner.Parent = status
-
-    local count = Instance.new("TextLabel")
-    count.Position = UDim2.new(0, 20, 0, 39)
-    count.Size = UDim2.new(1, -32, 0, 16)
-    count.BackgroundTransparency = 1
-    count.Text = "CHECKING EVENT…"
-    count.TextColor3 = Color3.fromRGB(177, 172, 183)
-    count.TextSize = 10
-    count.Font = Enum.Font.GothamMedium
-    count.TextXAlignment = Enum.TextXAlignment.Left
-    count.ZIndex = 12
-    count.Parent = card
-
-    local track = Instance.new("Frame")
-    track.Position = UDim2.new(0, 20, 0, 59)
-    track.Size = UDim2.new(1, -32, 0, 4)
-    track.BackgroundColor3 = Color3.fromRGB(56, 50, 59)
-    track.BorderSizePixel = 0
-    track.ZIndex = 12
-    track.Parent = card
-    local trackCorner = Instance.new("UICorner")
-    trackCorner.CornerRadius = UDim.new(1, 0)
-    trackCorner.Parent = track
-    local fill = Instance.new("Frame")
-    fill.Name = "Fill"
-    fill.Size = UDim2.fromScale(0, 1)
-    fill.BackgroundColor3 = Color3.fromRGB(255, 151, 74)
-    fill.BorderSizePixel = 0
-    fill.ZIndex = 13
-    fill.Parent = track
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
-    local fillGradient = Instance.new("UIGradient")
-    fillGradient.Color = ColorSequence.new(Color3.fromRGB(255, 198, 98), Color3.fromRGB(255, 105, 75))
-    fillGradient.Parent = fill
-
-    local source = Instance.new("TextLabel")
-    source.Position = UDim2.new(0, 20, 0, 70)
-    source.Size = UDim2.new(0, 105, 0, 20)
-    source.BackgroundTransparency = 1
-    source.Text = "SOURCE  ·  AT3M3"
-    source.TextColor3 = Color3.fromRGB(139, 132, 145)
-    source.TextSize = 8
-    source.Font = Enum.Font.GothamMedium
-    source.TextXAlignment = Enum.TextXAlignment.Left
-    source.ZIndex = 12
-    source.Parent = card
-
-    local startButton = Instance.new("TextButton")
-    startButton.Name = "StartStop"
-    startButton.AnchorPoint = Vector2.new(1, 0)
-    startButton.Position = UDim2.new(1, -72, 0, 68)
-    startButton.Size = UDim2.new(0, 66, 0, 26)
-    startButton.BackgroundColor3 = Color3.fromRGB(209, 104, 64)
-    startButton.BorderSizePixel = 0
-    startButton.Text = "START"
-    startButton.TextColor3 = Color3.fromRGB(255, 247, 239)
-    startButton.TextSize = 9
-    startButton.Font = Enum.Font.GothamBold
-    startButton.AutoButtonColor = false
-    startButton.ZIndex = 12
-    startButton.Parent = card
-    local startCorner = Instance.new("UICorner")
-    startCorner.CornerRadius = UDim.new(0, 8)
-    startCorner.Parent = startButton
-
-    local openButton = Instance.new("TextButton")
-    openButton.Name = "OpenMenu"
-    openButton.AnchorPoint = Vector2.new(1, 0)
-    openButton.Position = UDim2.new(1, -12, 0, 68)
-    openButton.Size = UDim2.new(0, 52, 0, 26)
-    openButton.BackgroundColor3 = Color3.fromRGB(48, 42, 54)
-    openButton.BorderSizePixel = 0
-    openButton.Text = "OPEN"
-    openButton.TextColor3 = Color3.fromRGB(234, 222, 240)
-    openButton.TextSize = 9
-    openButton.Font = Enum.Font.GothamBold
-    openButton.AutoButtonColor = false
-    openButton.ZIndex = 12
-    openButton.Parent = card
-    local openCorner = Instance.new("UICorner")
-    openCorner.CornerRadius = UDim.new(0, 8)
-    openCorner.Parent = openButton
-
-    state.miniStatusLabel = status
-    state.miniCountLabel = count
-    state.miniProgressFill = fill
-    state.miniStartButton = startButton
-
-    local buttonTweens = {}
-    local function hover(button, baseColor, hoverColor)
-        connect(state.miniConnections, button.MouseEnter:Connect(function()
-            if buttonTweens[button] then buttonTweens[button]:Cancel() end
-            buttonTweens[button] = TweenService:Create(button, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundColor3 = hoverColor })
-            buttonTweens[button]:Play()
-        end))
-        connect(state.miniConnections, button.MouseLeave:Connect(function()
-            if buttonTweens[button] then buttonTweens[button]:Cancel() end
-            buttonTweens[button] = TweenService:Create(button, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundColor3 = baseColor })
-            buttonTweens[button]:Play()
-        end))
-    end
-    hover(startButton, Color3.fromRGB(209, 104, 64), Color3.fromRGB(245, 132, 67))
-    hover(openButton, Color3.fromRGB(48, 42, 54), Color3.fromRGB(75, 61, 79))
-
-    connect(state.miniConnections, startButton.Activated:Connect(function()
-        if state.autoToggle and state.alive then state.autoToggle:Set(not state.autoToggle.value) end
-    end))
-    connect(state.miniConnections, openButton.Activated:Connect(function()
-        if state.window and state.alive and not state.fullVisible then
-            state.fullVisible = true
-            state.window:ToggleHide()
+    local function make(class, holder, props)
+        local obj = Instance.new(class)
+        for property, value in pairs(props) do
+            obj[property] = value
         end
+        obj.Parent = holder
+        return obj
+    end
+
+    local function rounded(holder, radius)
+        make("UICorner", holder, { CornerRadius = UDim.new(0, radius) })
+    end
+
+    local charcoal = Color3.fromRGB(15, 17, 23)
+    local accent = Color3.fromRGB(255, 169, 101)
+    local white = Color3.fromRGB(247, 246, 250)
+    local muted = Color3.fromRGB(146, 147, 161)
+    local tweenOut = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+    local gui = make("ScreenGui", parent, {
+        Name = "AtomickCandyMinimal",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 9000,
+    })
+
+    local dock = make("Frame", gui, {
+        Name = "Dock",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.68, 24),
+        Size = UDim2.fromOffset(336, 226),
+    })
+    local scale = make("UIScale", dock, { Scale = 1 })
+
+    local shadow = make("Frame", dock, {
+        Name = "Shadow",
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 0.57,
+        Position = UDim2.fromOffset(0, 12),
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 1,
+    })
+    rounded(shadow, 24)
+
+    local panel = make("Frame", dock, {
+        Name = "Panel",
+        BackgroundColor3 = charcoal,
+        BackgroundTransparency = 0.02,
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 2,
+    })
+    rounded(panel, 22)
+    make("UIGradient", panel, {
+        Rotation = 35,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(27, 27, 38)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(13, 16, 22)),
+        }),
+    })
+    local panelOutline = make("UIStroke", panel, {
+        Color = Color3.fromRGB(101, 84, 92),
+        Thickness = 1,
+        Transparency = 0.55,
+    })
+
+    local accentLine = make("Frame", panel, {
+        BackgroundColor3 = accent,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 0),
+        Size = UDim2.fromOffset(60, 3),
+        ZIndex = 3,
+    })
+    rounded(accentLine, 3)
+    make("UIGradient", accentLine, {
+        Color = ColorSequence.new(
+            Color3.fromRGB(255, 205, 119),
+            Color3.fromRGB(255, 106, 92)
+        ),
+    })
+
+    -- The title is also a drag handle (touch + mouse).
+    local dragHandle = make("Frame", panel, {
+        Name = "DragHandle",
+        BackgroundTransparency = 1,
+        Active = true,
+        Position = UDim2.fromOffset(18, 13),
+        Size = UDim2.fromOffset(300, 41),
+        ZIndex = 4,
+    })
+    make("TextLabel", dragHandle, {
+        BackgroundTransparency = 1,
+        Text = "ATOMICK",
+        Font = Enum.Font.GothamBold,
+        TextSize = 15,
+        TextColor3 = white,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.fromOffset(140, 22),
+        ZIndex = 5,
+    })
+    make("TextLabel", dragHandle, {
+        BackgroundTransparency = 1,
+        Text = "HALLOWEEN  /  2026",
+        Font = Enum.Font.GothamMedium,
+        TextSize = 9,
+        TextColor3 = muted,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(1, 22),
+        Size = UDim2.fromOffset(170, 13),
+        ZIndex = 5,
+    })
+
+    local pill = make("Frame", dragHandle, {
+        BackgroundColor3 = Color3.fromRGB(39, 39, 49),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(219, 3),
+        Size = UDim2.fromOffset(79, 25),
+        ZIndex = 5,
+    })
+    rounded(pill, 13)
+    local light = make("Frame", pill, {
+        BackgroundColor3 = accent,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(12, 9),
+        Size = UDim2.fromOffset(7, 7),
+        ZIndex = 6,
+    })
+    rounded(light, 7)
+    local pillText = make("TextLabel", pill, {
+        BackgroundTransparency = 1,
+        Text = "READY",
+        TextColor3 = Color3.fromRGB(210, 204, 209),
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(25, 3),
+        Size = UDim2.fromOffset(51, 19),
+        ZIndex = 6,
+    })
+
+    local progressNumber = make("TextLabel", panel, {
+        BackgroundTransparency = 1,
+        Text = "— / —",
+        Font = Enum.Font.GothamBold,
+        TextSize = 32,
+        TextColor3 = white,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(21, 65),
+        Size = UDim2.fromOffset(244, 40),
+        ZIndex = 4,
+    })
+    local progressName = make("TextLabel", panel, {
+        BackgroundTransparency = 1,
+        Text = "CANDY CORN  ·  EVENT",
+        Font = Enum.Font.GothamMedium,
+        TextSize = 10,
+        TextColor3 = muted,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(22, 104),
+        Size = UDim2.fromOffset(290, 14),
+        ZIndex = 4,
+    })
+
+    local track = make("Frame", panel, {
+        BackgroundColor3 = Color3.fromRGB(48, 48, 60),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 126),
+        Size = UDim2.fromOffset(296, 5),
+        ZIndex = 4,
+    })
+    rounded(track, 5)
+    local fill = make("Frame", track, {
+        BackgroundColor3 = accent,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1),
+        ZIndex = 5,
+    })
+    rounded(fill, 5)
+    make("UIGradient", fill, {
+        Color = ColorSequence.new(
+            Color3.fromRGB(255, 200, 114),
+            Color3.fromRGB(255, 111, 84)
+        ),
+    })
+
+    -- Only one GuiButton exists in the entire interface.
+    local button = make("TextButton", panel, {
+        Name = "StartStop",
+        Text = "▶   НАЧАТЬ СБОР",
+        TextColor3 = Color3.fromRGB(32, 22, 22),
+        Font = Enum.Font.GothamBold,
+        TextSize = 13,
+        AutoButtonColor = false,
+        BackgroundColor3 = Color3.fromRGB(255, 157, 98),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 148),
+        Size = UDim2.fromOffset(296, 49),
+        ZIndex = 4,
+    })
+    rounded(button, 13)
+    local buttonStroke = make("UIStroke", button, {
+        Color = Color3.fromRGB(255, 216, 156),
+        Thickness = 1,
+        Transparency = 0.5,
+    })
+    local buttonGradient = make("UIGradient", button, {
+        Rotation = 0,
+        Color = ColorSequence.new(
+            Color3.fromRGB(255, 194, 114),
+            Color3.fromRGB(255, 123, 86)
+        ),
+    })
+    local buttonScale = make("UIScale", button, { Scale = 1 })
+
+    local status = make("TextLabel", panel, {
+        BackgroundTransparency = 1,
+        Text = "Готов к запуску",
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextColor3 = muted,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Position = UDim2.fromOffset(20, 200),
+        Size = UDim2.fromOffset(296, 18),
+        ZIndex = 4,
+    })
+
+    local ui = {
+        gui = gui,
+        dock = dock,
+        scale = scale,
+        panelOutline = panelOutline,
+        number = progressNumber,
+        progressName = progressName,
+        fill = fill,
+        button = button,
+        buttonStroke = buttonStroke,
+        buttonGradient = buttonGradient,
+        buttonScale = buttonScale,
+        pill = pill,
+        pillText = pillText,
+        light = light,
+        status = status,
+        tweens = {},
+        lastProgress = -1,
+        running = false,
+    }
+    state.ui = ui
+
+    local function animateButton(value)
+        if ui.buttonTween then ui.buttonTween:Cancel() end
+        ui.buttonTween = TweenService:Create(buttonScale, tweenOut, { Scale = value })
+        ui.buttonTween:Play()
+    end
+
+    connect(state.uiConnections, button.MouseEnter:Connect(function()
+        animateButton(1.025)
+    end))
+    connect(state.uiConnections, button.MouseLeave:Connect(function()
+        animateButton(1)
+    end))
+    connect(state.uiConnections, button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            animateButton(0.975)
+        end
+    end))
+    connect(state.uiConnections, button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            animateButton(1)
+        end
+    end))
+    connect(state.uiConnections, button.Activated:Connect(function()
+        setAuto(not state.auto)
     end))
 
     local dragging = false
     local dragStart
-    local startPosition
-    connect(state.miniConnections, title.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local dockStart
+    connect(state.uiConnections, dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch then return end
         dragging = true
         dragStart = input.Position
-        startPosition = card.Position
-        input.Changed:Connect(function()
+        dockStart = dock.Position
+        connect(state.uiConnections, input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
+        end))
     end))
-    connect(state.miniConnections, UserInputService.InputChanged:Connect(function(input)
+    connect(state.uiConnections, UserInputService.InputChanged:Connect(function(input)
         if not dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+            and input.UserInputType ~= Enum.UserInputType.Touch then return end
         local delta = input.Position - dragStart
-        card.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+        dock.Position = UDim2.new(
+            dockStart.X.Scale, dockStart.X.Offset + delta.X,
+            dockStart.Y.Scale, dockStart.Y.Offset + delta.Y
+        )
     end))
 
-    local entrance = TweenService:Create(card, TweenInfo.new(0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0, 20, 0.58, 0),
-        BackgroundTransparency = 0.04,
-    })
-    table.insert(state.miniTweens, entrance)
+    local entrance = TweenService:Create(dock, TweenInfo.new(
+        0.58, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
+    ), { Position = UDim2.new(0.5, 0, 0.68, 0) })
+    table.insert(ui.tweens, entrance)
     entrance:Play()
-    local strokeIn = TweenService:Create(stroke, TweenInfo.new(0.42, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Transparency = 0.24 })
-    table.insert(state.miniTweens, strokeIn)
-    strokeIn:Play()
-    local shimmer = TweenService:Create(gradient, TweenInfo.new(12, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1), { Rotation = 360 })
-    state.miniGradientTween = shimmer
-    table.insert(state.miniTweens, shimmer)
-    shimmer:Play()
+
+    local borderTween = TweenService:Create(panelOutline, TweenInfo.new(
+        2.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
+    ), { Transparency = 0.3 })
+    table.insert(ui.tweens, borderTween)
+    borderTween:Play()
 end
 
-updateMini = function()
-    if not state.alive or not state.miniGui then return end
-    local eventData = getEventData()
-    local folder = weekFolder(eventData)
-    if eventData and folder then
-        local collected = countCollected(eventData, folder)
-        local total = 0
-        for _, item in ipairs(CollectionService:GetTagged("CandyCorn26")) do
-            if item:IsDescendantOf(folder) then total += 1 end
-        end
-        if state.miniCountLabel then
-            state.miniCountLabel.Text = string.format("WEEK %s  ·  %d / %d CANDY", tostring(eventData.HuntWeek), collected, total)
-        end
-        if state.miniProgressFill then
-            if state.miniProgressTween then state.miniProgressTween:Cancel() end
-            local progress = total > 0 and math.clamp(collected / total, 0, 1) or 0
-            state.miniProgressTween = TweenService:Create(state.miniProgressFill, TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Size = UDim2.fromScale(progress, 1) })
-            state.miniProgressTween:Play()
+updateUI = function(message)
+    if not state.alive or not state.ui then return end
+    local ui = state.ui
+    if message then state.currentStatus = message end
+
+    local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+    if view then
+        ui.scale.Scale = math.min(1, math.max(0.68, (view.X - 24) / 336))
+    end
+
+    local data = getEventData()
+    local folder, week = weekFolder(data)
+    local collected, total = 0, 0
+    if data and folder then
+        collected = countCollected(data, folder)
+        for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
+            if candy:IsA("BasePart") and candy:IsDescendantOf(folder) then
+                total += 1
+            end
         end
     end
-    if state.miniStatusLabel then
-        state.miniStatusLabel.Text = state.auto and "FARMING" or (state.freeze and "PAUSED" or "READY")
-        state.miniStatusLabel.TextColor3 = state.auto and Color3.fromRGB(255, 190, 114) or Color3.fromRGB(192, 176, 198)
+
+    ui.number.Text = total > 0 and string.format("%d / %d", collected, total) or "— / —"
+    ui.progressName.Text = week and ("CANDY CORN  ·  WEEK " .. tostring(week))
+        or "CANDY CORN  ·  EVENT"
+
+    local progress = total > 0 and math.clamp(collected / total, 0, 1) or 0
+    if math.abs(progress - ui.lastProgress) > 0.001 then
+        ui.lastProgress = progress
+        if ui.progressTween then ui.progressTween:Cancel() end
+        ui.progressTween = TweenService:Create(ui.fill, TweenInfo.new(
+            0.42, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
+        ), { Size = UDim2.fromScale(progress, 1) })
+        ui.progressTween:Play()
     end
-    if state.miniStartButton then
-        state.miniStartButton.Text = state.auto and "STOP" or "START"
-        state.miniStartButton.BackgroundColor3 = state.auto and Color3.fromRGB(91, 58, 65) or Color3.fromRGB(209, 104, 64)
+
+    ui.status.Text = state.currentStatus
+    local running = state.auto
+    if running ~= ui.running then
+        ui.running = running
+        ui.pillText.Text = running and "ACTIVE" or "READY"
+        ui.pillText.TextColor3 = running and Color3.fromRGB(255, 193, 124)
+            or Color3.fromRGB(210, 204, 209)
+        ui.pill.BackgroundColor3 = running and Color3.fromRGB(63, 43, 42)
+            or Color3.fromRGB(39, 39, 49)
+        ui.button.Text = running and "■   ОСТАНОВИТЬ" or "▶   НАЧАТЬ СБОР"
+        ui.button.TextColor3 = running and Color3.fromRGB(255, 225, 209)
+            or Color3.fromRGB(32, 22, 22)
+        ui.buttonGradient.Color = running and ColorSequence.new(
+            Color3.fromRGB(85, 56, 60), Color3.fromRGB(55, 45, 59)
+        ) or ColorSequence.new(
+            Color3.fromRGB(255, 194, 114), Color3.fromRGB(255, 123, 86)
+        )
+        ui.buttonStroke.Color = running and Color3.fromRGB(179, 113, 103)
+            or Color3.fromRGB(255, 216, 156)
+
+        if ui.pulseTween then ui.pulseTween:Cancel(); ui.pulseTween = nil end
+        ui.light.BackgroundTransparency = 0
+        if running then
+            ui.pulseTween = TweenService:Create(ui.light, TweenInfo.new(
+                0.85, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
+            ), { BackgroundTransparency = 0.7 })
+            ui.pulseTween:Play()
+        end
     end
 end
-settingsTab:CreateDropdown({
-    name = "Цветовая тема",
-    options = { "ember", "amethyst", "cobalt", "frost", "rose", "default" },
-    value = "ember",
-    callback = function(theme)
-        if state.window and state.alive then state.window:ChangeTheme(theme) end
-    end,
-})
 
-settingsTab:CreateButton({
-    name = "Остановить и закрыть",
-    description = "Отключает защиты, снимает закрепление и закрывает меню",
-    callback = function()
-        state.cleanup()
-    end,
-})
-
-createMiniWidget()
-updateMini()
-
+createUI()
+updateUI()
 connect(state.connections, player.CharacterAdded:Connect(function(character)
     task.spawn(watchCharacter, character)
 end))
@@ -1024,14 +920,13 @@ if player.Character then task.spawn(watchCharacter, player.Character) end
 local lastSafetyCheck = 0
 connect(state.connections, RunService.Heartbeat:Connect(function()
     if not state.alive then return end
-    if state.window and state.window.unloaded then
-        state.cleanup()
-        return
-    end
-
     local now = os.clock()
     if now - lastSafetyCheck < 0.12 then return end
     lastSafetyCheck = now
+    if now - (state.lastUIRefresh or 0) >= 0.7 then
+        state.lastUIRefresh = now
+        if updateUI then pcall(updateUI) end
+    end
 
     local _, root, humanoid = parts()
     if not root then return end
@@ -1050,10 +945,4 @@ connect(state.connections, RunService.Heartbeat:Connect(function()
     if state.freeze then setAnchored(root, true) end
 end))
 
-say("Atomick AutoFarm готов");
-task.defer(function()
-    if state.alive and state.autoToggle and not state.auto then
-        state.autoToggle:Set(true)
-    end
-end)
-
+say("Готов к сбору · нажми кнопку запуска")
