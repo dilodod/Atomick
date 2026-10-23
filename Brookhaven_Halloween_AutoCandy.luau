@@ -116,77 +116,56 @@ local function countCollected(eventData, folder)
     return count
 end
 
-local function findRespawnButton()
-    local playerGui = player:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-
-    for _, button in ipairs(playerGui:GetDescendants()) do
-        local isVisible = button:IsA("GuiButton") and button.Visible and button.Active
-        local ancestor = button.Parent
-        while isVisible and ancestor and ancestor ~= playerGui do
-            if ancestor:IsA("GuiObject") and not ancestor.Visible then
-                isVisible = false
-            elseif ancestor:IsA("ScreenGui") and not ancestor.Enabled then
-                isVisible = false
-            end
-            ancestor = ancestor.Parent
-        end
-        if isVisible then
-            local labels = {}
-            if button:IsA("TextButton") then table.insert(labels, button.Text) end
-            for _, child in ipairs(button:GetDescendants()) do
-                if child:IsA("TextLabel") or child:IsA("TextButton") then
-                    table.insert(labels, child.Text)
-                end
-            end
-            for _, label in ipairs(labels) do
-                local normalized = string.lower(label)
-                if string.find(normalized, "возродить конфет", 1, true)
-                    or (string.find(normalized, "respawn", 1, true)
-                        and (string.find(normalized, "candy", 1, true)
-                            or string.find(normalized, "candies", 1, true))) then
-                    return button
-                end
-            end
-        end
-    end
-    return nil
-end
-
 local function useOfficialRespawn(folder, week)
-    if not state.autoRespawn then return false end
-    local button = findRespawnButton()
-    if not button then
-        say("Кнопка игрового возрождения конфет сейчас недоступна")
-        return false
-    end
+    if not state.autoRespawn or not state.alive or not state.auto then return false end
 
-    local ok = pcall(function() button:Activate() end)
-    if not ok then
-        say("Не удалось нажать кнопку возрождения в игровом интерфейсе")
-        return false
-    end
-    say("Нажата штатная кнопка события · жду новые конфеты")
+    local data = getEventData()
+    local activeFolder, activeWeek = weekFolder(data)
+    if not data or not folder or activeFolder ~= folder or activeWeek ~= week then return false end
 
-    local deadline = os.clock() + 6
-    repeat
-        task.wait(0.25)
-        if not state.alive or not state.auto then return false end
-        local data = getEventData()
-        local currentFolder, currentWeek = weekFolder(data)
-        if currentFolder ~= folder or currentWeek ~= week then
-            say("Неделя события изменилась; автоповтор остановлен")
-            return false
+    local total = 0
+    for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
+        if candy:IsA("BasePart") and candy:IsDescendantOf(folder) then
+            total += 1
+            if not isCollected(data, candy.Name) then return false end
         end
+    end
+    if total == 0 then return false end
+
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local event = remotes and remotes:FindFirstChild("Halloween2026_ResetCandyCornHunt")
+    if not event or not event:IsA("RemoteFunction") then
+        say("RemoteFunction сброса конфет не найден")
+        return false
+    end
+
+    local generation = state.generation
+    local ok, result = pcall(function() return event:InvokeServer() end)
+    if not ok or result == false then
+        say("Сервер не подтвердил сброс: " .. tostring(result))
+        return false
+    end
+    say("Все конфеты собраны · запросил сброс")
+
+    for _ = 1, 40 do
+        task.wait(0.25)
+        if not state.alive or not state.auto or not state.autoRespawn
+            or state.generation ~= generation then return false end
+
+        local updated = getEventData()
+        local nextFolder, nextWeek = weekFolder(updated)
+        if nextFolder ~= folder or nextWeek ~= week then return false end
+
         for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
-            if candy:IsA("BasePart") and candy:IsDescendantOf(folder) and not isCollected(data, candy.Name) then
-                say("Новые конфеты появились · продолжаю сбор")
+            if candy:IsA("BasePart") and candy:IsDescendantOf(folder)
+                and not isCollected(updated, candy.Name) then
+                say("Новые конфеты появились · продолжаю фарм")
                 return true
             end
         end
-    until os.clock() >= deadline
+    end
 
-    say("После нажатия игровые данные не показали новых конфет; автоповтор остановлен")
+    say("Новые конфеты не появились; автоповтор остановлен")
     return false
 end
 
@@ -550,7 +529,7 @@ state.autoToggle = collectTab:CreateToggle({
 
 collectTab:CreateToggle({
     name = "Авто-возрождение конфет",
-    description = "Когда доступна, нажимает штатную кнопку события и ждёт подтверждения новых конфет",
+    description = "После полного сбора вызывает RemoteFunction сброса и ждёт новые конфеты",
     value = true,
     flag = "AutoRespawnCandy",
     callback = function(enabled)
