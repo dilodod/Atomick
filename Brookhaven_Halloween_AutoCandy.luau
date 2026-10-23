@@ -7,6 +7,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local TextService = game:GetService("TextService")
 
 local env = getgenv()
 local previous = env.__BrookhavenCandyState
@@ -31,6 +33,10 @@ local state = {
     uiConnections = {},
     currentStatus = "Готов к запуску",
     lastCandyResetAt = -100,
+    sessionCollected = 0,
+    countedCandies = {},
+    noticeText = nil,
+    noticeUntil = 0,
 }
 env.__BrookhavenCandyState = state
 
@@ -55,9 +61,21 @@ local function parts()
     return character, character:FindFirstChild("HumanoidRootPart"), character:FindFirstChildOfClass("Humanoid")
 end
 
-local function say(message)
+local function showNotice(message, duration)
+    if not state.alive then return end
+    state.noticeText = message
+    state.noticeUntil = os.clock() + (duration or 3)
+    local expires = state.noticeUntil
+    if updateUI then pcall(updateUI) end
+    task.delay(duration or 3, function()
+        if state.alive and state.noticeUntil == expires and updateUI then pcall(updateUI) end
+    end)
+end
+
+local function say(message, notice)
     if not state.alive then return end
     state.currentStatus = message
+    if notice then showNotice(notice) end
     if updateUI then pcall(updateUI, message) end
     print("[Candy Corn] " .. message)
 end
@@ -95,14 +113,28 @@ local function isCollected(eventData, name)
     return collected ~= nil and collected[name] == true
 end
 
-local function countCollected(eventData, folder)
-    local count = 0
-    for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
-        if candy:IsDescendantOf(folder) and isCollected(eventData, candy.Name) then
-            count += 1
-        end
+-- Rearm a candy only after replicated data says it is available again.
+-- This also handles a reset that completes while STOP is pressed.
+local function observeSessionProgress(eventData, week)
+    if not eventData or eventData.HuntWeek ~= week
+        or type(eventData.HuntCollected) ~= "table" then return nil end
+    local counted = state.countedCandies[week]
+    if not counted then
+        counted = {}
+        state.countedCandies[week] = counted
     end
-    return count
+    for name in pairs(counted) do
+        if not isCollected(eventData, name) then counted[name] = nil end
+    end
+    return counted
+end
+
+local function recordCollected(eventData, week, name)
+    local counted = observeSessionProgress(eventData, week)
+    if not counted or counted[name] or not isCollected(eventData, name) then return false end
+    counted[name] = true
+    state.sessionCollected += 1
+    return true
 end
 
 -- Returns true only after the server actually refreshes the replicated hunt.
@@ -114,7 +146,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
     local data = getEventData()
     local activeFolder, activeWeek = weekFolder(data)
     if not data or not folder or activeFolder ~= folder or activeWeek ~= week then
-        say("Не удалось подтвердить активную неделю; сброс отменён")
+        say("Не удалось подтвердить активную неделю; сброс отменён", "Нет данных события")
         return false
     end
 
@@ -132,7 +164,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
         end
     end
     if tagged == 0 then
-        say("Конфеты не загружены в мире; автосброс отменён")
+        say("Конфеты не загружены в мире; автосброс отменён", "Конфеты не загружены")
         return false
     end
 
@@ -161,7 +193,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
         return ReplicatedStorage.Remotes.Halloween2026_ResetCandyCornHunt:InvokeServer()
     end)
     if not ok or response == false then
-        say("Сброс не принят сервером: " .. tostring(response))
+        say("Сброс не принят сервером: " .. tostring(response), "Сброс недоступен")
         return false
     end
 
@@ -174,7 +206,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
         local updated = getEventData()
         local nextFolder, nextWeek = weekFolder(updated)
         if nextFolder ~= folder or nextWeek ~= week then
-            say("Активная неделя изменилась · остановлено")
+            say("Активная неделя изменилась · остановлено", "Неделя изменилась")
             return false
         end
 
@@ -183,6 +215,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
         if updated and type(updated.HuntCollected) == "table" then
             for candyName in pairs(collectedBefore) do
                 if not isCollected(updated, candyName) then
+                    observeSessionProgress(updated, week)
                     say("Сервер обновил прогресс · начинаю новый сбор")
                     return true
                 end
@@ -190,7 +223,7 @@ local function useOfficialRespawn(folder, week, runId, considered)
         end
     until os.clock() >= deadline
 
-    say("Вызов сброса выполнен, но прогресс не изменился; проверь ограничение сервера")
+    say("Вызов сброса выполнен, но прогресс не изменился; проверь ограничение сервера", "Сброс не подтверждён")
     return false
 end
 
@@ -269,14 +302,15 @@ end
 local function collectPass(runId)
     local data = getEventData()
     local folder, week = weekFolder(data)
-    if not data or not folder then
-        say("Не удалось прочитать активную неделю события")
+    if not data or not folder or type(data.HuntCollected) ~= "table" then
+        say("Не удалось прочитать активную неделю события", "Нет данных события")
         return
     end
+    observeSessionProgress(data, week)
 
     local character, root = parts()
     if not character or not root then
-        say("Персонаж ещё загружается")
+        say("Персонаж ещё загружается", "Персонаж загружается")
         return
     end
 
@@ -343,17 +377,19 @@ local function collectPass(runId)
         local candy = table.remove(candies, 1)
         local latest = getEventData()
         local currentFolder, currentWeek = weekFolder(latest)
-        if currentWeek ~= week or currentFolder ~= folder then
-            say("Неделя события изменилась; остановлено")
+        if currentWeek ~= week or currentFolder ~= folder
+            or type(latest.HuntCollected) ~= "table" then
+            say("Данные недели события изменились; остановлено", "Нет данных события")
             completed = false
             break
         end
 
         -- Read live replicated progress again immediately before each teleport.
+        observeSessionProgress(latest, week)
         if candy.Parent and not isCollected(latest, candy.Name) then
             local _, currentRoot, humanoid = parts()
             if not currentRoot then
-                say("Персонаж не готов; остановлено")
+                say("Персонаж не готов; остановлено", "Персонаж не готов")
                 completed = false
                 break
             end
@@ -397,6 +433,9 @@ local function collectPass(runId)
             end
 
             if confirmed then
+                if state.alive and runId == state.generation then
+                    recordCollected(latest, week, candy.Name)
+                end
                 say("Засчитано: " .. candy.Name)
             else
                 say("Сервер пока не подтвердил: " .. candy.Name)
@@ -425,7 +464,7 @@ local function collectPass(runId)
         local finalData = getEventData()
         local finalFolder, finalWeek = weekFolder(finalData)
         if not finalData or finalFolder ~= folder or finalWeek ~= week then
-            say("Данные недели изменились · сброс отменён")
+            say("Данные недели изменились · сброс отменён", "Неделя изменилась")
             return "stopped", folder, week
         end
         local remaining = 0
@@ -464,12 +503,9 @@ function state.cleanup()
 
     if state.ui then
         local ui = state.ui
-        for _, effect in ipairs(ui.tweens) do
+        for _, effect in pairs(ui.tweens) do
             pcall(function() effect:Cancel() end)
         end
-        if ui.progressTween then pcall(function() ui.progressTween:Cancel() end) end
-        if ui.pulseTween then pcall(function() ui.pulseTween:Cancel() end) end
-        if ui.buttonTween then pcall(function() ui.buttonTween:Cancel() end) end
         pcall(function() ui.gui:Destroy() end)
         state.ui = nil
     end
@@ -481,12 +517,14 @@ local function setAuto(enabled)
     enabled = enabled == true
     if state.auto == enabled then return end
     if enabled and state.freeze then
-        say("Сначала сними закрепление персонажа")
+        say("Сначала сними закрепление персонажа", "Персонаж закреплён")
         return
     end
 
     state.auto = enabled
     state.generation += 1
+    state.noticeText = nil
+    state.noticeUntil = 0
     if not enabled then
         say("Сбор остановлен")
         return
@@ -507,8 +545,8 @@ local function setAuto(enabled)
                 end
             end
         end)
-        if not ok and state.alive then
-            say("Ошибка сбора: " .. tostring(err))
+        if not ok and state.alive and runId == state.generation then
+            say("Ошибка сбора: " .. tostring(err), "Ошибка сбора")
         end
         if state.alive and runId == state.generation then
             state.auto = false
@@ -525,224 +563,389 @@ local function createUI()
     end
     local function make(class, holder, props)
         local object = Instance.new(class)
-        for k, v in pairs(props) do object[k] = v end
+        for key, value in pairs(props) do object[key] = value end
         object.Parent = holder
         return object
     end
     local function round(holder, radius)
         make("UICorner", holder, {CornerRadius = UDim.new(0, radius)})
     end
+    local ink = Color3.fromRGB(61, 28, 7)
     local gui = make("ScreenGui", parent, {
         Name = "AtomickCandyBar", ResetOnSpawn = false,
         IgnoreGuiInset = true, DisplayOrder = 9000,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     })
+    -- Clamp in viewport coordinates, including the insets explicitly below.
+    gui.ScreenInsets = Enum.ScreenInsets.None
     local dock = make("Frame", gui, {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.82, 15),
-        Size = UDim2.fromOffset(330, 52),
-        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.5, 0.82), Size = UDim2.fromOffset(360, 56),
     })
-    local scale = make("UIScale", dock, {Scale = 1})
-    local bar = make("Frame", dock, {
-        BackgroundColor3 = Color3.fromRGB(18, 20, 29),
-        BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
-        ClipsDescendants = true,
+    local introScale = make("UIScale", dock, {Scale = 0.97})
+    local shadow = make("Frame", dock, {
+        BackgroundColor3 = Color3.fromRGB(98, 43, 8), BackgroundTransparency = 1,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(0, 4),
+        Size = UDim2.fromScale(1, 1), ZIndex = 1,
+    })
+    round(shadow, 17)
+    local canvas = make("CanvasGroup", dock, {
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 10),
+        GroupTransparency = 1, ClipsDescendants = true, ZIndex = 2,
+    })
+    round(canvas, 16)
+    -- UIGradient belongs to a supported Frame; CanvasGroup handles the fade.
+    local bar = make("Frame", canvas, {
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1), ClipsDescendants = true, Active = true, ZIndex = 2,
     })
     round(bar, 16)
-    make("UIStroke", bar, {
-        Color = Color3.fromRGB(100, 108, 135),
-        Transparency = 0.45, Thickness = 1,
-    })
     make("UIGradient", bar, {
-        Color = ColorSequence.new(
-            Color3.fromRGB(32, 33, 46),
-            Color3.fromRGB(15, 18, 27)
-        ), Rotation = 12,
+        Color = ColorSequence.new(Color3.fromRGB(255, 155, 63), Color3.fromRGB(255, 132, 45)),
+        Rotation = 12,
     })
-    local accent = make("Frame", bar, {
-        BackgroundColor3 = Color3.fromRGB(255, 173, 106),
-        BorderSizePixel = 0, Position = UDim2.fromOffset(0, 9),
-        Size = UDim2.fromOffset(3, 34),
+    make("UIStroke", bar, {
+        Color = Color3.fromRGB(255, 193, 119), Transparency = 0.25, Thickness = 1,
     })
-    round(accent, 3)
-
-    -- One horizontal line: action | live count or centered Telegram channel.
-    local button = make("TextButton", bar, {
-        Name = "StartStop", AutoButtonColor = false,
-        Text = "START", Font = Enum.Font.GothamBold,
-        TextSize = 12, TextColor3 = Color3.fromRGB(30, 24, 25),
-        BackgroundColor3 = Color3.fromRGB(255, 180, 113),
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(8, 7),
-        Size = UDim2.fromOffset(100, 38),
+    local highlight = make("Frame", bar, {
+        BackgroundColor3 = Color3.fromRGB(255, 222, 179), BackgroundTransparency = 0.6,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(16, 1),
+        Size = UDim2.new(1, -32, 0, 1), ZIndex = 2,
     })
-    round(button, 11)
-    local buttonScale = make("UIScale", button, {Scale = 1})
-    local buttonGradient = make("UIGradient", button, {
-        Color = ColorSequence.new(
-            Color3.fromRGB(255, 206, 139),
-            Color3.fromRGB(255, 142, 101)
-        ),
-    })
-    local divider = make("Frame", bar, {
-        BackgroundColor3 = Color3.fromRGB(79, 82, 103),
-        BackgroundTransparency = 0.4, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(116, 12),
-        Size = UDim2.fromOffset(1, 28),
-    })
-    local right = make("Frame", bar, {
-        BackgroundTransparency = 1, Active = true,
-        Position = UDim2.fromOffset(124, 0),
-        Size = UDim2.fromOffset(196, 52),
-    })
-    local channel = make("TextLabel", right, {
-        BackgroundTransparency = 1,
-        Text = "✈  @AT3M3", Font = Enum.Font.GothamBold,
-        TextSize = 15, TextColor3 = Color3.fromRGB(143, 209, 255),
-        TextXAlignment = Enum.TextXAlignment.Center,
-        Size = UDim2.fromScale(1, 1),
-    })
-    local count = make("TextLabel", right, {
-        BackgroundTransparency = 1,
-        Text = "СОБРАНО  0 / 0",
-        Font = Enum.Font.GothamBold, TextSize = 15,
-        TextColor3 = Color3.fromRGB(248, 247, 251),
-        TextXAlignment = Enum.TextXAlignment.Center,
-        Size = UDim2.fromScale(1, 1), Visible = false,
-    })
-    local progressTrack = make("Frame", right, {
-        BackgroundColor3 = Color3.fromRGB(59, 65, 82),
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(12, 43),
-        Size = UDim2.fromOffset(172, 2),
-        Visible = false,
-    })
-    round(progressTrack, 2)
-    local fill = make("Frame", progressTrack, {
-        BackgroundColor3 = Color3.fromRGB(255, 176, 109),
-        BorderSizePixel = 0, Size = UDim2.fromScale(0, 1),
-    })
-    round(fill, 2)
-
+    round(highlight, 1)
     local ui = {
-        gui = gui, dock = dock, scale = scale,
-        button = button, buttonScale = buttonScale,
-        buttonGradient = buttonGradient,
-        channel = channel, count = count,
-        progressTrack = progressTrack, fill = fill,
-        running = false, lastProgress = -1, tweens = {},
+        gui = gui, dock = dock, bar = bar, introScale = introScale,
+        tweens = {}, layers = {}, sections = {}, running = nil, mode = nil,
+        lastCount = -1, modeRevision = 0, width = 360, dragged = false,
+        pointer = nil, suppressedInput = nil,
+        blockedInputs = setmetatable({}, {__mode = "k"}),
     }
     state.ui = ui
-    local function animateButton(size)
-        if ui.buttonTween then ui.buttonTween:Cancel() end
-        ui.buttonTween = TweenService:Create(buttonScale,
-            TweenInfo.new(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-            {Scale = size})
-        ui.buttonTween:Play()
-    end
-    connect(state.uiConnections, button.MouseEnter:Connect(function()
-        animateButton(1.035)
-    end))
-    connect(state.uiConnections, button.MouseLeave:Connect(function()
-        animateButton(1)
-    end))
-    connect(state.uiConnections, button.Activated:Connect(function()
-        setAuto(not state.auto)
-        if updateUI then updateUI() end
-    end))
 
-    -- Telegram is centered in the right half while stopped.
-    connect(state.uiConnections, right.InputBegan:Connect(function(input)
-        if state.auto then return end
+    -- Fixed tween slots and reusable ripples keep rapid clicks bounded.
+    local function tween(key, object, duration, properties)
+        if ui.tweens[key] then ui.tweens[key]:Cancel() end
+        local effect = TweenService:Create(object,
+            TweenInfo.new(duration, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties)
+        ui.tweens[key] = effect
+        effect:Play()
+    end
+    ui.tween = tween
+
+    local function section(name, position, size, transparency)
+        local hit = make("TextButton", bar, {
+            Name = name, Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            BorderSizePixel = 0, Position = position, Size = size, ZIndex = 3,
+        })
+        local face = make("Frame", hit, {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(255, 218, 170),
+            BackgroundTransparency = transparency, BorderSizePixel = 0,
+            ClipsDescendants = true, ZIndex = 3,
+        })
+        round(face, 11)
+        local faceScale = make("UIScale", face, {Scale = 1})
+        local ripple = make("Frame", face, {
+            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(0, 0),
+            BackgroundColor3 = Color3.fromRGB(255, 235, 204), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 4,
+        })
+        make("UICorner", ripple, {CornerRadius = UDim.new(1, 0)})
+        local value = {hit = hit, face = face, scale = faceScale, ripple = ripple, name = name}
+        ui.sections[name] = value
+        return value
+    end
+    local left = section("StartStop", UDim2.fromOffset(6, 6), UDim2.new(0.3, 0, 1, -12), 0.78)
+    local right = section("Information", UDim2.new(0.3, 22, 0, 6), UDim2.new(0.7, -28, 1, -12), 1)
+    ui.button, ui.right = left.hit, right.hit
+    ui.actionLabel = make("TextLabel", left.face, {
+        Text = "▶  START", Font = Enum.Font.GothamBold, TextSize = 12,
+        TextColor3 = ink, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 5,
+    })
+    make("Frame", bar, {
+        BackgroundColor3 = Color3.fromRGB(113, 53, 7), BackgroundTransparency = 0.78,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0.3, 14, 0.5, 0), Size = UDim2.fromOffset(1, 24), ZIndex = 3,
+    })
+    for _, name in ipairs({"channel", "count", "notice"}) do
+        ui.layers[name] = make("CanvasGroup", right.face, {
+            Name = name, BackgroundTransparency = 1, GroupTransparency = 1,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromScale(1, 1), Visible = false, ZIndex = 5,
+        })
+    end
+    make("TextLabel", ui.layers.channel, {
+        Text = "➤  @AT3M3", Font = Enum.Font.GothamMedium, TextSize = 15,
+        TextColor3 = ink, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+    })
+    ui.notice = make("TextLabel", ui.layers.notice, {
+        Text = "", Font = Enum.Font.GothamMedium, TextSize = 14,
+        TextColor3 = ink, BackgroundTransparency = 1, TextScaled = true, TextWrapped = false,
+        Position = UDim2.fromOffset(5, 0), Size = UDim2.new(1, -10, 1, 0),
+    })
+    make("UITextSizeConstraint", ui.notice, {MinTextSize = 11, MaxTextSize = 14})
+    local counter = make("Frame", ui.layers.count, {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundTransparency = 1, Size = UDim2.fromOffset(160, 30),
+    })
+    ui.countScale = make("UIScale", counter, {Scale = 1})
+    local function counterLabel(text, font, size)
+        return make("TextLabel", counter, {
+            Text = text, Font = font, TextSize = size, TextColor3 = ink,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.fromOffset(70, 30),
+        })
+    end
+    local prefix = counterLabel("Собрано", Enum.Font.GothamMedium, 14)
+    ui.number = counterLabel("0", Enum.Font.GothamBold, 16)
+    local suffix = counterLabel("шт.", Enum.Font.GothamMedium, 14)
+    local prefixWidth = math.ceil(TextService:GetTextSize(prefix.Text, 14, prefix.Font, Vector2.new(1000, 30)).X)
+    local suffixWidth = math.ceil(TextService:GetTextSize(suffix.Text, 14, suffix.Font, Vector2.new(1000, 30)).X)
+    prefix.Size = UDim2.fromOffset(prefixWidth, 30)
+    ui.numberPosition = UDim2.fromOffset(prefixWidth + 6, 0)
+    ui.fitCounter = function()
+        local numberWidth = math.ceil(TextService:GetTextSize(ui.number.Text, 16,
+            ui.number.Font, Vector2.new(1000, 30)).X) + 2
+        ui.number.Size = UDim2.fromOffset(numberWidth, 30)
+        suffix.Position = UDim2.fromOffset(prefixWidth + numberWidth + 12, 0)
+        suffix.Size = UDim2.fromOffset(suffixWidth, 30)
+        local width = prefixWidth + numberWidth + suffixWidth + 12
+        counter.Size = UDim2.fromOffset(width, 30)
+        ui.countScale.Scale = math.clamp((ui.width * 0.7 - 40) / width, 0.01, 1)
+    end
+
+    ui.setMode = function(mode)
+        if ui.mode == mode then return end
+        local first = ui.mode == nil
+        ui.mode = mode
+        ui.modeRevision += 1
+        local revision = ui.modeRevision
+        for name, layer in pairs(ui.layers) do
+            if name == mode then
+                if not layer.Visible then
+                    layer.Position = UDim2.new(0.5, first and 0 or 7, 0.5, 0)
+                end
+                layer.Visible = true
+                tween(name .. "Transition", layer, first and 0 or 0.18, {
+                    GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5),
+                })
+            elseif layer.Visible then
+                tween(name .. "Transition", layer, 0.18, {
+                    GroupTransparency = 1, Position = UDim2.new(0.5, -7, 0.5, 0),
+                })
+                task.delay(0.2, function()
+                    if state.alive and state.ui == ui and ui.modeRevision == revision
+                        and ui.mode ~= name then layer.Visible = false end
+                end)
+            end
+        end
+    end
+
+    local function clampCenter(center)
+        return Vector2.new(
+            math.clamp(center.X, ui.minX + ui.width / 2, ui.maxX - ui.width / 2),
+            math.clamp(center.Y, ui.minY + 28, math.max(ui.minY + 28, ui.maxY - 28)))
+    end
+    ui.layout = function()
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local viewport = camera.ViewportSize
+        local insetStart, insetEnd = GuiService:GetGuiInset()
+        local layoutKey = string.format("%d:%d:%d:%d:%d:%d", viewport.X, viewport.Y,
+            insetStart.X, insetStart.Y, insetEnd.X, insetEnd.Y)
+        if ui.layoutKey == layoutKey then return end
+        if ui.cancelPointer then ui.cancelPointer() end
+        ui.layoutKey = layoutKey
+        ui.minX, ui.maxX = insetStart.X + 10, viewport.X - insetEnd.X - 10
+        ui.minY, ui.maxY = insetStart.Y + 10, viewport.Y - insetEnd.Y - 10
+        ui.width = math.min(360, math.max(1, ui.maxX - ui.minX))
+        -- Avoid inverted clamp limits when a viewport is briefly zero-sized.
+        ui.maxX = math.max(ui.maxX, ui.minX + ui.width)
+        dock.Size = UDim2.fromOffset(ui.width, 56)
+        local center = ui.dragged and Vector2.new(dock.Position.X.Offset, dock.Position.Y.Offset)
+            or Vector2.new(viewport.X * 0.5, viewport.Y * 0.82)
+        center = clampCenter(center)
+        dock.Position = UDim2.fromOffset(center.X, center.Y)
+        ui.fitCounter()
+    end
+
+    local function interactive(value)
+        return value == left or (not state.auto and ui.mode == "channel")
+    end
+    local function restTransparency(value)
+        if value == right then return 1 end
+        return state.auto and 0.91 or 0.78
+    end
+    local function release(value)
+        tween(value.name .. "Press", value.scale, 0.18, {Scale = 1})
+        tween(value.name .. "Face", value.face, 0.18, {
+            Position = UDim2.fromScale(0.5, 0.5), BackgroundTransparency = restTransparency(value),
+        })
+    end
+    local function press(value, point)
+        if not interactive(value) then return end
+        local bounds, size = value.hit.AbsolutePosition, value.hit.AbsoluteSize
+        local x = math.clamp((point.X - bounds.X) / math.max(1, size.X), 0, 1)
+        local y = math.clamp((point.Y - bounds.Y) / math.max(1, size.Y), 0, 1)
+        local ripple = value.ripple
+        if ui.tweens[value.name .. "Ripple"] then ui.tweens[value.name .. "Ripple"]:Cancel() end
+        ripple.Position = UDim2.fromScale(x, y)
+        ripple.Size = UDim2.fromOffset(0, 0)
+        ripple.BackgroundTransparency = 0.45
+        local diameter = math.max(size.X, size.Y) * 2.4
+        tween(value.name .. "Ripple", ripple, 0.38, {
+            Size = UDim2.fromOffset(diameter, diameter), BackgroundTransparency = 1,
+        })
+        tween(value.name .. "Press", value.scale, 0.08, {Scale = 0.975})
+        tween(value.name .. "Face", value.face, 0.08, {
+            Position = UDim2.new(0.5, value == left and -1 or 1, 0.5, 1),
+            BackgroundTransparency = value == left and 0.65 or 0.87,
+        })
+    end
+    for _, value in pairs(ui.sections) do
+        connect(state.uiConnections, value.hit.MouseEnter:Connect(function()
+            if interactive(value) and not ui.pointer then
+                tween(value.name .. "Face", value.face, 0.15, {
+                    BackgroundTransparency = value == left and 0.62 or 0.89,
+                })
+            end
+        end))
+        connect(state.uiConnections, value.hit.MouseLeave:Connect(function()
+            if not ui.pointer then release(value) end
+        end))
+    end
+    local function contains(hit, point)
+        local position, size = hit.AbsolutePosition, hit.AbsoluteSize
+        return point.X >= position.X and point.X <= position.X + size.X
+            and point.Y >= position.Y and point.Y <= position.Y + size.Y
+    end
+    local function beginPointer(input)
+        if not state.alive then return end
         if input.UserInputType ~= Enum.UserInputType.MouseButton1
             and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        if ui.pointer then
+            if input ~= ui.pointer.input then ui.blockedInputs[input] = true end
+            return
+        end
+        ui.layout()
+        if not ui.minX then return end
+        local point = Vector2.new(input.Position.X, input.Position.Y)
+        local target = contains(left.hit, point) and left or (contains(right.hit, point) and right or nil)
+        ui.suppressedInput = nil
+        ui.pointer = {
+            input = input, origin = point, dragging = false, section = target,
+            center = Vector2.new(dock.Position.X.Offset, dock.Position.Y.Offset),
+        }
+        if target then press(target, point) end
+    end
+    ui.cancelPointer = function()
+        if not ui.pointer then return end
+        ui.suppressedInput = ui.pointer.input
+        ui.pointer = nil
+        release(left)
+        release(right)
+    end
+    connect(state.uiConnections, bar.InputBegan:Connect(beginPointer))
+    connect(state.uiConnections, left.hit.InputBegan:Connect(beginPointer))
+    connect(state.uiConnections, right.hit.InputBegan:Connect(beginPointer))
+    connect(state.uiConnections, UserInputService.InputChanged:Connect(function(input)
+        local pointer = ui.pointer
+        if not pointer then return end
+        if pointer.input.UserInputType == Enum.UserInputType.Touch then
+            if input ~= pointer.input then return end
+        elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
+            return
+        end
+        local point = Vector2.new(input.Position.X, input.Position.Y)
+        local delta = point - pointer.origin
+        if not pointer.dragging and delta.Magnitude < 6 then return end
+        if not pointer.dragging then
+            pointer.dragging = true
+            ui.suppressedInput = pointer.input
+            ui.dragged = true
+            release(left)
+            release(right)
+        end
+        local center = clampCenter(pointer.center + delta)
+        dock.Position = UDim2.fromOffset(center.X, center.Y)
+    end))
+    connect(state.uiConnections, UserInputService.InputEnded:Connect(function(input)
+        local pointer = ui.pointer
+        if not pointer or input ~= pointer.input then return end
+        if pointer.dragging then ui.suppressedInput = input end
+        ui.pointer = nil
+        release(left)
+        release(right)
+    end))
+    connect(state.uiConnections, UserInputService.WindowFocusReleased:Connect(ui.cancelPointer))
+
+    local function canActivate(input)
+        if not state.alive or (ui.pointer and ui.pointer.dragging) then return false end
+        if input and ui.blockedInputs[input] then return false end
+        if input and input == ui.suppressedInput then return false end
+        -- A second finger must not activate a different section during a gesture.
+        if input and ui.pointer and input ~= ui.pointer.input then return false end
+        return true
+    end
+    connect(state.uiConnections, left.hit.Activated:Connect(function(input)
+        if not canActivate(input) then return end
+        setAuto(not state.auto)
+    end))
+    connect(state.uiConnections, right.hit.Activated:Connect(function(input)
+        if not canActivate(input) or state.auto or ui.mode ~= "channel" then return end
+        local ok, result = false, nil
         if type(setclipboard) == "function" then
-            pcall(setclipboard, "https://t.me/AT3M3")
+            ok, result = pcall(setclipboard, "https://t.me/AT3M3")
+        end
+        if ok and result ~= false then
+            showNotice("Скопировано", 1)
+        else
+            showNotice("t.me/AT3M3", 3)
         end
     end))
-
-    local dragging, dragStart, dockStart = false, nil, nil
-    connect(state.uiConnections, bar.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1
-            and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        dragging = true
-        dragStart, dockStart = input.Position, dock.Position
-        connect(state.uiConnections, input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end))
-    end))
-    connect(state.uiConnections, UserInputService.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement
-            and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local delta = input.Position - dragStart
-        dock.Position = UDim2.new(
-            dockStart.X.Scale, dockStart.X.Offset + delta.X,
-            dockStart.Y.Scale, dockStart.Y.Offset + delta.Y
-        )
-    end))
-    local intro = TweenService:Create(dock,
-        TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-        {Position = UDim2.new(0.5, 0, 0.82, 0)})
-    table.insert(ui.tweens, intro)
-    intro:Play()
+    ui.layout()
+    tween("introScale", introScale, 0.4, {Scale = 1})
+    tween("intro", canvas, 0.4, {GroupTransparency = 0, Position = UDim2.fromOffset(0, 0)})
+    tween("shadow", shadow, 0.4, {BackgroundTransparency = 0.84})
 end
 
 updateUI = function(message)
     if not state.alive or not state.ui then return end
     if message then state.currentStatus = message end
     local ui = state.ui
-    local camera = workspace.CurrentCamera
-    if camera then
-        ui.scale.Scale = math.min(1, math.max(0.65,
-            (camera.ViewportSize.X - 20) / 330))
-    end
-    local data = getEventData()
-    local folder = weekFolder(data)
-    local collected, total = 0, 0
-    if data then
-        if type(data.HuntCollected) == "table" then
-            for _, marked in pairs(data.HuntCollected) do
-                if marked then collected += 1 end
-            end
-        end
-        if folder then
-            for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
-                if candy:IsA("BasePart") and candy:IsDescendantOf(folder) then
-                    total += 1
-                end
-            end
+    ui.layout()
+    if ui.lastCount ~= state.sessionCollected then
+        local previousCount = ui.lastCount
+        ui.lastCount = state.sessionCollected
+        local digits = string.format("%.0f", state.sessionCollected)
+        ui.number.Text = digits:reverse():gsub("(%d%d%d)", "%1 "):reverse():gsub("^ ", "")
+        if ui.tweens.countBump then ui.tweens.countBump:Cancel() end
+        ui.number.Position = ui.numberPosition
+        ui.number.TextTransparency = 0
+        ui.fitCounter()
+        if previousCount >= 0 and state.auto and ui.mode == "count" then
+            ui.number.Position = ui.numberPosition + UDim2.fromOffset(0, 3)
+            ui.number.TextTransparency = 0.3
+            ui.tween("countBump", ui.number, 0.16, {
+                Position = ui.numberPosition, TextTransparency = 0,
+            })
         end
     end
-    total = math.max(total, collected)
-    ui.count.Text = string.format("СОБРАНО  %d / %d", collected, total)
-    local progress = total > 0 and math.clamp(collected / total, 0, 1) or 0
-    if math.abs(progress - ui.lastProgress) > 0.001 then
-        ui.lastProgress = progress
-        if ui.progressTween then ui.progressTween:Cancel() end
-        ui.progressTween = TweenService:Create(ui.fill,
-            TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-            {Size = UDim2.fromScale(progress, 1)})
-        ui.progressTween:Play()
-    end
-    if state.auto ~= ui.running then
+    if ui.running ~= state.auto then
         ui.running = state.auto
-        ui.channel.Visible = not state.auto
-        ui.count.Visible = state.auto
-        ui.progressTrack.Visible = state.auto
-        ui.button.Text = state.auto and "STOP" or "START"
-        ui.button.TextColor3 = state.auto
-            and Color3.fromRGB(255, 225, 224)
-            or Color3.fromRGB(30, 24, 25)
-        ui.buttonGradient.Color = state.auto and ColorSequence.new(
-            Color3.fromRGB(92, 62, 76),
-            Color3.fromRGB(58, 48, 67)
-        ) or ColorSequence.new(
-            Color3.fromRGB(255, 206, 139),
-            Color3.fromRGB(255, 142, 101)
-        )
+        ui.actionLabel.Text = state.auto and "■  STOP" or "▶  START"
+        ui.right.Selectable = not state.auto
+        ui.tween("StartStopFace", ui.sections.StartStop.face, 0.16, {
+            BackgroundTransparency = state.auto and 0.91 or 0.78,
+            Position = UDim2.fromScale(0.5, 0.5),
+        })
     end
+    local notice = state.noticeText and os.clock() < state.noticeUntil
+    if notice then ui.notice.Text = state.noticeText end
+    ui.setMode(notice and "notice" or (state.auto and "count" or "channel"))
 end
+
 
 createUI()
 updateUI()
@@ -780,3 +983,4 @@ connect(state.connections, RunService.Heartbeat:Connect(function()
 end))
 
 say("Готов к сбору · нажми кнопку запуска")
+
