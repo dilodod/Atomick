@@ -2,23 +2,25 @@
 
 Brookhaven Halloween 2026 Candy Corn helper for the Real Roblox executor.
 
-## Features
+## Interface
 
-- Compact, draggable mini widget with animated progress, START/STOP, and OPEN controls
-- Rayfield Gen2 full menu with ember theme, progress, logs, themes, and protection settings
-- Nearest-next routing; rechecks server-replicated progress before each move
-- Short confirmation window and one retry for each collection attempt
-- Skips already-collected candy and unsupported locations below the map
-- Optional auto-respawn activates the visible in-game respawn button and waits for new candy before continuing
-- Anti-sit and recovery from falls; optional character freeze
-- Local route reset rescans only remaining candy and never clears event progress
-- Telegram button copies `https://t.me/AT3M3`
-- Source label `SOURCE · AT3M3`
-- RightShift hides/shows the full menu; RightControl starts/stops collection
+- One draggable orange bar with a subtle gradient, sized up to 360 × 56 pixels and kept inside the screen insets.
+- START immediately reveals `Собрано N шт.`; STOP restores the centered `@AT3M3` channel in the right section.
+- Independent press, hover and ripple feedback on the two sections, a short entrance transition, and animated count changes.
+- The session counter counts confirmed pickups made by the collector. It survives STOP/START and candy-hunt resets; running the script again starts a new session.
+- Already-collected candy is skipped. Repeated confirmation of the same candy is counted once until replicated data shows that candy is available again.
+- Clicking the channel copies `https://t.me/AT3M3` and confirms success. If clipboard access is unavailable or fails, the bar displays `t.me/AT3M3` instead.
+- Dragging begins after 6 pixels of movement and suppresses the click. Mouse and touch input are supported.
+- Short failures appear in the same row; detailed collection messages are printed to the executor console.
+
+## Collection
+
+The collector chooses the nearest remaining candy, rechecks replicated event data before moving, and waits for confirmation with one retry. It skips unsupported locations below the map and includes anti-sit and fall recovery.
+
+Collection relies on the game's proximity component. After exhausting the known candidates, auto-respawn invokes the game's `Halloween2026_ResetCandyCornHunt` reset remote and waits for replicated progress to change before continuing. The session total is independent of that hunt progress.
 
 ## Run
 
-Load `Brookhaven_Halloween_AutoCandy.luau` in Real while Brookhaven is running. The UI downloads Rayfield Gen2 from its upstream URL when it starts.
+Load `Brookhaven_Halloween_AutoCandy.luau` in Real while Brookhaven is running. The interface uses native Roblox instances and TweenService; it does not download a GUI library or external assets.
 
-The collector relies on the game's proximity component and confirms collection from replicated event data. Auto-respawn uses the visible event button and waits for replicated candy state to change; it does not call the hunt-reset remote directly. A candy location below the map without a safe floor is skipped to avoid trapping the character in the void.
-
+The helper depends on the event's current replicated data and objects. A missing event, unavailable character, or rejected reset is reported in the bar.
