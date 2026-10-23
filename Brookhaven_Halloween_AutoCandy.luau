@@ -116,56 +116,92 @@ local function countCollected(eventData, folder)
     return count
 end
 
-local function useOfficialRespawn(folder, week)
-    if not state.autoRespawn or not state.alive or not state.auto then return false end
+-- Returns true only after the server actually refreshes the replicated hunt.
+-- "rescan" means another collectible appeared before the reset.
+local function useOfficialRespawn(folder, week, runId, considered)
+    if not state.autoRespawn or not state.alive or not state.auto
+        or state.generation ~= runId then return false end
 
     local data = getEventData()
     local activeFolder, activeWeek = weekFolder(data)
-    if not data or not folder or activeFolder ~= folder or activeWeek ~= week then return false end
+    if not data or not folder or activeFolder ~= folder or activeWeek ~= week then
+        say("Не удалось подтвердить активную неделю; сброс отменён")
+        return false
+    end
 
-    local total = 0
+    local tagged = 0
+    local collectedBefore = {}
     for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
         if candy:IsA("BasePart") and candy:IsDescendantOf(folder) then
-            total += 1
-            if not isCollected(data, candy.Name) then return false end
-        end
-    end
-    if total == 0 then return false end
-
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    local event = remotes and remotes:FindFirstChild("Halloween2026_ResetCandyCornHunt")
-    if not event or not event:IsA("RemoteFunction") then
-        say("RemoteFunction сброса конфет не найден")
-        return false
-    end
-
-    local generation = state.generation
-    local ok, result = pcall(function() return event:InvokeServer() end)
-    if not ok or result == false then
-        say("Сервер не подтвердил сброс: " .. tostring(result))
-        return false
-    end
-    say("Все конфеты собраны · запросил сброс")
-
-    for _ = 1, 40 do
-        task.wait(0.25)
-        if not state.alive or not state.auto or not state.autoRespawn
-            or state.generation ~= generation then return false end
-
-        local updated = getEventData()
-        local nextFolder, nextWeek = weekFolder(updated)
-        if nextFolder ~= folder or nextWeek ~= week then return false end
-
-        for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
-            if candy:IsA("BasePart") and candy:IsDescendantOf(folder)
-                and not isCollected(updated, candy.Name) then
-                say("Новые конфеты появились · продолжаю фарм")
-                return true
+            tagged += 1
+            if isCollected(data, candy.Name) then
+                collectedBefore[candy.Name] = true
+            elseif not considered or not considered[candy.Name] then
+                say("Появились новые доступные конфеты · пересканирую маршрут")
+                return "rescan"
             end
         end
     end
+    if tagged == 0 then
+        say("Конфеты не загружены в мире; автосброс отменён")
+        return false
+    end
 
-    say("Новые конфеты не появились; автоповтор остановлен")
+    -- Never spin the reset remote if progress is not refreshed by the server.
+    local sinceLastReset = os.clock() - (state.lastCandyResetAt or -100)
+    if sinceLastReset < 3 then task.wait(3 - sinceLastReset) end
+    if not state.alive or not state.auto or not state.autoRespawn
+        or state.generation ~= runId then return false end
+
+    data = getEventData()
+    activeFolder, activeWeek = weekFolder(data)
+    if not data or activeFolder ~= folder or activeWeek ~= week then return false end
+    for _, candy in ipairs(CollectionService:GetTagged("CandyCorn26")) do
+        if candy:IsA("BasePart") and candy:IsDescendantOf(folder)
+            and not isCollected(data, candy.Name)
+            and (not considered or not considered[candy.Name]) then
+            say("Найдены новые конфеты · продолжаю сбор")
+            return "rescan"
+        end
+    end
+
+    -- 58/60 is allowed here: every known candidate has been attempted.
+    state.lastCandyResetAt = os.clock()
+    say("Доступные конфеты закончились · вызываю сброс (независимо от счётчика)")
+    local ok, response = pcall(function()
+        return ReplicatedStorage.Remotes.Halloween2026_ResetCandyCornHunt:InvokeServer()
+    end)
+    if not ok or response == false then
+        say("Сброс не принят сервером: " .. tostring(response))
+        return false
+    end
+
+    local deadline = os.clock() + 10
+    repeat
+        task.wait(0.25)
+        if not state.alive or not state.auto or not state.autoRespawn
+            or state.generation ~= runId then return false end
+
+        local updated = getEventData()
+        local nextFolder, nextWeek = weekFolder(updated)
+        if nextFolder ~= folder or nextWeek ~= week then
+            say("Активная неделя изменилась · остановлено")
+            return false
+        end
+
+        -- Previously collected candies must become uncollected; otherwise
+        -- the 2 already-missing candies at 58/60 look like a false success.
+        if updated and type(updated.HuntCollected) == "table" then
+            for candyName in pairs(collectedBefore) do
+                if not isCollected(updated, candyName) then
+                    say("Сервер обновил прогресс · начинаю новый сбор")
+                    return true
+                end
+            end
+        end
+    until os.clock() >= deadline
+
+    say("Вызов сброса выполнен, но прогресс не изменился; проверь ограничение сервера")
     return false
 end
 
@@ -266,8 +302,10 @@ local function collectPass(runId)
 
     local startCFrame = state.lastSafeCFrame or root.CFrame
     local candies = {}
+    local considered = {}
     for _, item in ipairs(CollectionService:GetTagged("CandyCorn26")) do
         if item:IsA("BasePart") and item:IsDescendantOf(folder) and not isCollected(data, item.Name) then
+            considered[item.Name] = true
             table.insert(candies, item)
         end
     end
@@ -287,19 +325,23 @@ local function collectPass(runId)
 
     if #candies == 0 then
         if skippedUnsafe > 0 then
-            say("Остались только небезопасные точки; проверяю штатную кнопку возрождения")
+            say("Остались только небезопасные точки; проверяю сброс конфет")
         else
-            say("В неделе " .. week .. " все конфеты уже собраны")
+            say("В неделе " .. week .. " больше нет доступных конфет")
         end
-        return "empty", folder, week
+        return "empty", folder, week, considered
     end
     local total = #candies
     local visited = 0
     say("Неделя " .. week .. ": найдено " .. total .. " ещё не собранных")
 
     local planned = #candies
+    local completed = true
     for _ = 1, planned do
-        if not state.alive or not state.auto or state.freeze or runId ~= state.generation then break end
+        if not state.alive or not state.auto or state.freeze or runId ~= state.generation then
+            completed = false
+            break
+        end
 
         local beforeData = getEventData()
         for i = #candies, 1, -1 do
@@ -311,7 +353,10 @@ local function collectPass(runId)
         if #candies == 0 then break end
 
         local _, routeRoot = parts()
-        if not routeRoot then break end
+        if not routeRoot then
+            completed = false
+            break
+        end
         table.sort(candies, function(a, b)
             local da = (a.Position - routeRoot.Position).Magnitude
             local db = (b.Position - routeRoot.Position).Magnitude
@@ -323,6 +368,7 @@ local function collectPass(runId)
         local currentFolder, currentWeek = weekFolder(latest)
         if currentWeek ~= week or currentFolder ~= folder then
             say("Неделя события изменилась; остановлено")
+            completed = false
             break
         end
 
@@ -331,6 +377,7 @@ local function collectPass(runId)
             local _, currentRoot, humanoid = parts()
             if not currentRoot then
                 say("Персонаж не готов; остановлено")
+                completed = false
                 break
             end
 
@@ -382,13 +429,15 @@ local function collectPass(runId)
             if not state.alive or not state.auto or runId ~= state.generation then
                 local _, returnRoot = parts()
                 if returnRoot then returnRoot.CFrame = safe end
+                completed = false
                 break
             end
             task.wait(0.05)
         end
     end
 
-    if state.alive and runId == state.generation then
+    if state.alive and state.auto and not state.freeze and completed
+        and runId == state.generation then
         local _, returnRoot = parts()
         if returnRoot and not state.freeze then
             returnRoot.CFrame = startCFrame
@@ -397,7 +446,11 @@ local function collectPass(runId)
         updateStat()
 
         local finalData = getEventData()
-        local finalFolder = weekFolder(finalData)
+        local finalFolder, finalWeek = weekFolder(finalData)
+        if not finalData or finalFolder ~= folder or finalWeek ~= week then
+            say("Данные недели изменились · сброс отменён")
+            return "stopped", folder, week
+        end
         local remaining = 0
         if finalData and finalFolder then
             for _, item in ipairs(CollectionService:GetTagged("CandyCorn26")) do
@@ -416,7 +469,9 @@ local function collectPass(runId)
                 })
             end)
         end
-        return remaining == 0 and "empty" or "done", finalFolder, week
+        -- Every available target was visited. Even if progress is 58/60,
+        -- no new candidates remain on this pass, so try the reset remote.
+        return "empty", finalFolder, week, considered
     end
     return "stopped", folder, week
 end
@@ -508,9 +563,14 @@ state.autoToggle = collectTab:CreateToggle({
             task.spawn(function()
                 local ok, err = pcall(function()
                     while state.alive and state.auto and runId == state.generation do
-                        local result, folder, week = collectPass(runId)
+                        local result, folder, week, considered = collectPass(runId)
                         if result ~= "empty" or not state.auto then break end
-                        if not useOfficialRespawn(folder, week) then break end
+                        local resetResult = useOfficialRespawn(folder, week, runId, considered)
+                        if resetResult == "rescan" then
+                            task.wait(0.25)
+                        elseif resetResult ~= true then
+                            break
+                        end
                     end
                 end)
                 if not ok and state.alive then
@@ -529,7 +589,7 @@ state.autoToggle = collectTab:CreateToggle({
 
 collectTab:CreateToggle({
     name = "Авто-возрождение конфет",
-    description = "После полного сбора вызывает RemoteFunction сброса и ждёт новые конфеты",
+    description = "Когда доступные конфеты закончились (даже 58/60), запрашивает сброс и проверяет обновление прогресса",
     value = true,
     flag = "AutoRespawnCandy",
     callback = function(enabled)
