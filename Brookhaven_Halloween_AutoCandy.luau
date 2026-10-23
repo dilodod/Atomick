@@ -1012,4 +1012,9 @@ connect(state.connections, RunService.Heartbeat:Connect(function()
 end))
 
 say("Atomick AutoFarm готов");
+task.defer(function()
+    if state.alive and state.autoToggle and not state.auto then
+        state.autoToggle:Set(true)
+    end
+end)
 
