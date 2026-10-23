@@ -524,292 +524,341 @@ local function createUI()
         if ok and hidden then parent = hidden end
     end
 
-    local function make(class, holder, props)
-        local obj = Instance.new(class)
-        for property, value in pairs(props) do
-            obj[property] = value
-        end
-        obj.Parent = holder
-        return obj
+    local function make(class, holder, properties)
+        local object = Instance.new(class)
+        for key, value in pairs(properties) do object[key] = value end
+        object.Parent = holder
+        return object
     end
-
     local function rounded(holder, radius)
         make("UICorner", holder, { CornerRadius = UDim.new(0, radius) })
     end
+    local function playTween(target, info, goal)
+        local tween = TweenService:Create(target, info, goal)
+        tween:Play()
+        return tween
+    end
 
-    local charcoal = Color3.fromRGB(15, 17, 23)
-    local accent = Color3.fromRGB(255, 169, 101)
-    local white = Color3.fromRGB(247, 246, 250)
-    local muted = Color3.fromRGB(146, 147, 161)
-    local tweenOut = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    local white = Color3.fromRGB(247, 246, 249)
+    local gray = Color3.fromRGB(154, 157, 172)
+    local amber = Color3.fromRGB(255, 178, 110)
+    local telegram = Color3.fromRGB(100, 185, 255)
+    local easing = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
     local gui = make("ScreenGui", parent, {
-        Name = "AtomickCandyMinimal",
+        Name = "AtomickCandyMini",
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
         DisplayOrder = 9000,
     })
-
     local dock = make("Frame", gui, {
-        Name = "Dock",
-        BackgroundTransparency = 1,
+        Name = "Mini",
         AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.68, 24),
-        Size = UDim2.fromOffset(336, 226),
+        Position = UDim2.new(0.5, 0, 0.78, 25),
+        Size = UDim2.fromOffset(272, 128),
+        BackgroundTransparency = 1,
     })
     local scale = make("UIScale", dock, { Scale = 1 })
-
     local shadow = make("Frame", dock, {
-        Name = "Shadow",
         BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-        BackgroundTransparency = 0.57,
-        Position = UDim2.fromOffset(0, 12),
-        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 0.62,
         BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 8),
+        Size = UDim2.fromScale(1, 1),
         ZIndex = 1,
     })
-    rounded(shadow, 24)
+    rounded(shadow, 21)
 
     local panel = make("Frame", dock, {
-        Name = "Panel",
-        BackgroundColor3 = charcoal,
-        BackgroundTransparency = 0.02,
-        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.fromRGB(17, 19, 27),
         BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
         ClipsDescendants = true,
         ZIndex = 2,
     })
-    rounded(panel, 22)
+    rounded(panel, 20)
     make("UIGradient", panel, {
-        Rotation = 35,
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(27, 27, 38)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(13, 16, 22)),
-        }),
-    })
-    local panelOutline = make("UIStroke", panel, {
-        Color = Color3.fromRGB(101, 84, 92),
-        Thickness = 1,
-        Transparency = 0.55,
-    })
-
-    local accentLine = make("Frame", panel, {
-        BackgroundColor3 = accent,
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(20, 0),
-        Size = UDim2.fromOffset(60, 3),
-        ZIndex = 3,
-    })
-    rounded(accentLine, 3)
-    make("UIGradient", accentLine, {
+        Rotation = 32,
         Color = ColorSequence.new(
-            Color3.fromRGB(255, 205, 119),
-            Color3.fromRGB(255, 106, 92)
+            Color3.fromRGB(29, 29, 42),
+            Color3.fromRGB(13, 17, 25)
         ),
     })
+    local outline = make("UIStroke", panel, {
+        Color = Color3.fromRGB(101, 108, 136),
+        Transparency = 0.55,
+        Thickness = 1,
+    })
 
-    -- The title is also a drag handle (touch + mouse).
-    local dragHandle = make("Frame", panel, {
-        Name = "DragHandle",
-        BackgroundTransparency = 1,
+    local topBar = make("Frame", panel, {
+        BackgroundColor3 = amber,
+        BorderSizePixel = 0,
+        Size = UDim2.fromOffset(42, 2),
+        Position = UDim2.fromOffset(15, 0),
+        ZIndex = 3,
+    })
+    rounded(topBar, 2)
+    make("UIGradient", topBar, {
+        Color = ColorSequence.new(amber, telegram),
+    })
+
+    local handle = make("Frame", panel, {
+        Name = "DragArea",
         Active = true,
-        Position = UDim2.fromOffset(18, 13),
-        Size = UDim2.fromOffset(300, 41),
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(9, 5),
+        Size = UDim2.fromOffset(155, 29),
+        ZIndex = 3,
+    })
+    local emblem = make("Frame", handle, {
+        BackgroundColor3 = amber,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.fromOffset(17, 17),
         ZIndex = 4,
     })
-    make("TextLabel", dragHandle, {
+    rounded(emblem, 6)
+    make("TextLabel", emblem, {
+        BackgroundTransparency = 1,
+        Text = "A",
+        Font = Enum.Font.GothamBold,
+        TextColor3 = Color3.fromRGB(29, 22, 26),
+        TextSize = 11,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 5,
+    })
+    make("TextLabel", handle, {
         BackgroundTransparency = 1,
         Text = "ATOMICK",
         Font = Enum.Font.GothamBold,
-        TextSize = 15,
+        TextSize = 13,
         TextColor3 = white,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(0, 0),
-        Size = UDim2.fromOffset(140, 22),
-        ZIndex = 5,
-    })
-    make("TextLabel", dragHandle, {
-        BackgroundTransparency = 1,
-        Text = "HALLOWEEN  /  2026",
-        Font = Enum.Font.GothamMedium,
-        TextSize = 9,
-        TextColor3 = muted,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(1, 22),
-        Size = UDim2.fromOffset(170, 13),
-        ZIndex = 5,
+        Position = UDim2.fromOffset(31, 3),
+        Size = UDim2.fromOffset(110, 24),
+        ZIndex = 4,
     })
 
-    local pill = make("Frame", dragHandle, {
-        BackgroundColor3 = Color3.fromRGB(39, 39, 49),
+    -- Telegram branding; tapping the label copies the channel URL.
+    local tgPill = make("Frame", panel, {
+        BackgroundColor3 = Color3.fromRGB(26, 48, 66),
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(219, 3),
-        Size = UDim2.fromOffset(79, 25),
-        ZIndex = 5,
+        Position = UDim2.fromOffset(170, 9),
+        Size = UDim2.fromOffset(88, 22),
+        Active = true,
+        ZIndex = 4,
     })
-    rounded(pill, 13)
-    local light = make("Frame", pill, {
-        BackgroundColor3 = accent,
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(12, 9),
-        Size = UDim2.fromOffset(7, 7),
-        ZIndex = 6,
+    rounded(tgPill, 11)
+    local tgStroke = make("UIStroke", tgPill, {
+        Color = telegram, Transparency = 0.64, Thickness = 1,
     })
-    rounded(light, 7)
-    local pillText = make("TextLabel", pill, {
+    local tgText = make("TextLabel", tgPill, {
         BackgroundTransparency = 1,
-        Text = "READY",
-        TextColor3 = Color3.fromRGB(210, 204, 209),
-        TextSize = 9,
+        Text = "TG  @AT3M3",
         Font = Enum.Font.GothamBold,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(25, 3),
-        Size = UDim2.fromOffset(51, 19),
-        ZIndex = 6,
+        TextSize = 9,
+        TextColor3 = Color3.fromRGB(158, 216, 255),
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 5,
     })
 
-    local progressNumber = make("TextLabel", panel, {
+    local number = make("TextLabel", panel, {
         BackgroundTransparency = 1,
         Text = "— / —",
         Font = Enum.Font.GothamBold,
-        TextSize = 32,
+        TextSize = 25,
         TextColor3 = white,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(21, 65),
-        Size = UDim2.fromOffset(244, 40),
+        Position = UDim2.fromOffset(15, 35),
+        Size = UDim2.fromOffset(156, 34),
         ZIndex = 4,
     })
-    local progressName = make("TextLabel", panel, {
+    local name = make("TextLabel", panel, {
         BackgroundTransparency = 1,
-        Text = "CANDY CORN  ·  EVENT",
+        Text = "CANDY CORN",
         Font = Enum.Font.GothamMedium,
-        TextSize = 10,
-        TextColor3 = muted,
+        TextSize = 9,
+        TextColor3 = gray,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(22, 104),
-        Size = UDim2.fromOffset(290, 14),
+        Position = UDim2.fromOffset(16, 70),
+        Size = UDim2.fromOffset(155, 14),
         ZIndex = 4,
     })
 
-    local track = make("Frame", panel, {
-        BackgroundColor3 = Color3.fromRGB(48, 48, 60),
+    -- The only actual button: toggle farm on/off.
+    local button = make("TextButton", panel, {
+        Name = "StartStop",
+        BackgroundColor3 = amber,
+        Text = "START",
+        TextColor3 = Color3.fromRGB(33, 27, 28),
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        AutoButtonColor = false,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(20, 126),
-        Size = UDim2.fromOffset(296, 5),
+        Position = UDim2.fromOffset(174, 44),
+        Size = UDim2.fromOffset(84, 38),
         ZIndex = 4,
     })
-    rounded(track, 5)
+    rounded(button, 12)
+    local buttonScale = make("UIScale", button, { Scale = 1 })
+    local buttonGradient = make("UIGradient", button, {
+        Color = ColorSequence.new(
+            Color3.fromRGB(255, 211, 142),
+            Color3.fromRGB(255, 138, 103)
+        ),
+    })
+    local buttonOutline = make("UIStroke", button, {
+        Color = Color3.fromRGB(255, 230, 175),
+        Transparency = 0.55,
+        Thickness = 1,
+    })
+
+    local track = make("Frame", panel, {
+        BackgroundColor3 = Color3.fromRGB(50, 53, 64),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(15, 89),
+        Size = UDim2.fromOffset(242, 3),
+        ZIndex = 4,
+    })
+    rounded(track, 3)
     local fill = make("Frame", track, {
-        BackgroundColor3 = accent,
+        BackgroundColor3 = amber,
         BorderSizePixel = 0,
         Size = UDim2.fromScale(0, 1),
         ZIndex = 5,
     })
-    rounded(fill, 5)
+    rounded(fill, 3)
     make("UIGradient", fill, {
-        Color = ColorSequence.new(
-            Color3.fromRGB(255, 200, 114),
-            Color3.fromRGB(255, 111, 84)
-        ),
+        Color = ColorSequence.new(amber, telegram),
     })
-
-    -- Only one GuiButton exists in the entire interface.
-    local button = make("TextButton", panel, {
-        Name = "StartStop",
-        Text = "▶   НАЧАТЬ СБОР",
-        TextColor3 = Color3.fromRGB(32, 22, 22),
-        Font = Enum.Font.GothamBold,
-        TextSize = 13,
-        AutoButtonColor = false,
-        BackgroundColor3 = Color3.fromRGB(255, 157, 98),
+    local statusDot = make("Frame", panel, {
+        BackgroundColor3 = Color3.fromRGB(120, 125, 141),
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(20, 148),
-        Size = UDim2.fromOffset(296, 49),
+        Position = UDim2.fromOffset(16, 101),
+        Size = UDim2.fromOffset(5, 5),
         ZIndex = 4,
     })
-    rounded(button, 13)
-    local buttonStroke = make("UIStroke", button, {
-        Color = Color3.fromRGB(255, 216, 156),
-        Thickness = 1,
-        Transparency = 0.5,
-    })
-    local buttonGradient = make("UIGradient", button, {
-        Rotation = 0,
-        Color = ColorSequence.new(
-            Color3.fromRGB(255, 194, 114),
-            Color3.fromRGB(255, 123, 86)
-        ),
-    })
-    local buttonScale = make("UIScale", button, { Scale = 1 })
-
+    rounded(statusDot, 5)
     local status = make("TextLabel", panel, {
         BackgroundTransparency = 1,
         Text = "Готов к запуску",
         Font = Enum.Font.Gotham,
-        TextSize = 10,
-        TextColor3 = muted,
-        TextXAlignment = Enum.TextXAlignment.Center,
+        TextSize = 9,
+        TextColor3 = gray,
+        TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
-        Position = UDim2.fromOffset(20, 200),
-        Size = UDim2.fromOffset(296, 18),
+        Position = UDim2.fromOffset(27, 96),
+        Size = UDim2.fromOffset(229, 16),
         ZIndex = 4,
     })
+
+    -- Seamless scrolling Telegram signature; two repeated copies align exactly.
+    local tickerWindow = make("Frame", panel, {
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(15, 112),
+        Size = UDim2.fromOffset(242, 13),
+        ZIndex = 4,
+    })
+    local message = "  @AT3M3  •  t.me/AT3M3  •  TELEGRAM / AT3M3  • "
+    local textService = game:GetService("TextService")
+    local messageWidth = math.ceil(textService:GetTextSize(
+        message, 9, Enum.Font.GothamMedium, Vector2.new(10000, 13)
+    ).X) + 20
+    local moving = make("Frame", tickerWindow, {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.fromOffset(messageWidth * 2, 13),
+        ZIndex = 4,
+    })
+    for i = 0, 1 do
+        make("TextLabel", moving, {
+            BackgroundTransparency = 1,
+            Text = message,
+            TextColor3 = Color3.fromRGB(105, 160, 198),
+            Font = Enum.Font.GothamMedium,
+            TextSize = 9,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.fromOffset(i * messageWidth, 0),
+            Size = UDim2.fromOffset(messageWidth, 13),
+            ZIndex = 5,
+        })
+    end
+    local tickerTween = playTween(moving, TweenInfo.new(
+        16, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1
+    ), { Position = UDim2.fromOffset(-messageWidth, 0) })
 
     local ui = {
         gui = gui,
         dock = dock,
         scale = scale,
-        panelOutline = panelOutline,
-        number = progressNumber,
-        progressName = progressName,
+        number = number,
+        progressName = name,
         fill = fill,
-        button = button,
-        buttonStroke = buttonStroke,
-        buttonGradient = buttonGradient,
-        buttonScale = buttonScale,
-        pill = pill,
-        pillText = pillText,
-        light = light,
         status = status,
-        tweens = {},
+        statusDot = statusDot,
+        button = button,
+        buttonScale = buttonScale,
+        buttonGradient = buttonGradient,
+        buttonOutline = buttonOutline,
         lastProgress = -1,
         running = false,
+        tweens = { tickerTween },
     }
     state.ui = ui
 
-    local function animateButton(value)
+    local function buttonAnimation(size)
         if ui.buttonTween then ui.buttonTween:Cancel() end
-        ui.buttonTween = TweenService:Create(buttonScale, tweenOut, { Scale = value })
-        ui.buttonTween:Play()
+        ui.buttonTween = playTween(buttonScale, easing, { Scale = size })
     end
-
     connect(state.uiConnections, button.MouseEnter:Connect(function()
-        animateButton(1.025)
+        buttonAnimation(1.04)
     end))
     connect(state.uiConnections, button.MouseLeave:Connect(function()
-        animateButton(1)
+        buttonAnimation(1)
     end))
     connect(state.uiConnections, button.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            animateButton(0.975)
+            buttonAnimation(0.96)
         end
     end))
     connect(state.uiConnections, button.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            animateButton(1)
+            buttonAnimation(1)
         end
     end))
     connect(state.uiConnections, button.Activated:Connect(function()
         setAuto(not state.auto)
     end))
 
+    connect(state.uiConnections, tgPill.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local copied = pcall(function()
+            if type(setclipboard) ~= "function" then error("clipboard unavailable") end
+            setclipboard("https://t.me/AT3M3")
+        end)
+        if copied then
+            tgText.Text = "✓  COPIED"
+            playTween(tgStroke, easing, { Transparency = 0.15 })
+            task.delay(1.6, function()
+                if state.alive and tgText.Parent then
+                    tgText.Text = "TG  @AT3M3"
+                    playTween(tgStroke, easing, { Transparency = 0.64 })
+                end
+            end)
+        else
+            say("ТГК: t.me/AT3M3")
+        end
+    end))
+
     local dragging = false
-    local dragStart
-    local dockStart
-    connect(state.uiConnections, dragHandle.InputBegan:Connect(function(input)
+    local dragStart, dockStart
+    connect(state.uiConnections, handle.InputBegan:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1
             and input.UserInputType ~= Enum.UserInputType.Touch then return end
         dragging = true
@@ -830,17 +879,14 @@ local function createUI()
         )
     end))
 
-    local entrance = TweenService:Create(dock, TweenInfo.new(
-        0.58, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
-    ), { Position = UDim2.new(0.5, 0, 0.68, 0) })
+    local entrance = playTween(dock, TweenInfo.new(
+        0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
+    ), { Position = UDim2.new(0.5, 0, 0.78, 0) })
     table.insert(ui.tweens, entrance)
-    entrance:Play()
-
-    local borderTween = TweenService:Create(panelOutline, TweenInfo.new(
-        2.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
+    local outlineTween = playTween(outline, TweenInfo.new(
+        3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
     ), { Transparency = 0.3 })
-    table.insert(ui.tweens, borderTween)
-    borderTween:Play()
+    table.insert(ui.tweens, outlineTween)
 end
 
 updateUI = function(message)
@@ -848,9 +894,10 @@ updateUI = function(message)
     local ui = state.ui
     if message then state.currentStatus = message end
 
-    local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+    local camera = workspace.CurrentCamera
+    local view = camera and camera.ViewportSize
     if view then
-        ui.scale.Scale = math.min(1, math.max(0.68, (view.X - 24) / 336))
+        ui.scale.Scale = math.min(1, math.max(0.68, (view.X - 18) / 272))
     end
 
     local data = getEventData()
@@ -867,14 +914,13 @@ updateUI = function(message)
 
     ui.number.Text = total > 0 and string.format("%d / %d", collected, total) or "— / —"
     ui.progressName.Text = week and ("CANDY CORN  ·  WEEK " .. tostring(week))
-        or "CANDY CORN  ·  EVENT"
-
+        or "CANDY CORN"
     local progress = total > 0 and math.clamp(collected / total, 0, 1) or 0
     if math.abs(progress - ui.lastProgress) > 0.001 then
         ui.lastProgress = progress
         if ui.progressTween then ui.progressTween:Cancel() end
         ui.progressTween = TweenService:Create(ui.fill, TweenInfo.new(
-            0.42, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
+            0.36, Enum.EasingStyle.Quint, Enum.EasingDirection.Out
         ), { Size = UDim2.fromScale(progress, 1) })
         ui.progressTween:Play()
     end
@@ -883,27 +929,23 @@ updateUI = function(message)
     local running = state.auto
     if running ~= ui.running then
         ui.running = running
-        ui.pillText.Text = running and "ACTIVE" or "READY"
-        ui.pillText.TextColor3 = running and Color3.fromRGB(255, 193, 124)
-            or Color3.fromRGB(210, 204, 209)
-        ui.pill.BackgroundColor3 = running and Color3.fromRGB(63, 43, 42)
-            or Color3.fromRGB(39, 39, 49)
-        ui.button.Text = running and "■   ОСТАНОВИТЬ" or "▶   НАЧАТЬ СБОР"
-        ui.button.TextColor3 = running and Color3.fromRGB(255, 225, 209)
-            or Color3.fromRGB(32, 22, 22)
+        ui.button.Text = running and "STOP" or "START"
+        ui.button.TextColor3 = running and Color3.fromRGB(255, 219, 214)
+            or Color3.fromRGB(33, 27, 28)
         ui.buttonGradient.Color = running and ColorSequence.new(
-            Color3.fromRGB(85, 56, 60), Color3.fromRGB(55, 45, 59)
+            Color3.fromRGB(84, 55, 66), Color3.fromRGB(55, 46, 63)
         ) or ColorSequence.new(
-            Color3.fromRGB(255, 194, 114), Color3.fromRGB(255, 123, 86)
+            Color3.fromRGB(255, 211, 142), Color3.fromRGB(255, 138, 103)
         )
-        ui.buttonStroke.Color = running and Color3.fromRGB(179, 113, 103)
-            or Color3.fromRGB(255, 216, 156)
-
+        ui.buttonOutline.Color = running and Color3.fromRGB(186, 113, 123)
+            or Color3.fromRGB(255, 230, 175)
+        ui.statusDot.BackgroundColor3 = running and Color3.fromRGB(119, 228, 171)
+            or Color3.fromRGB(120, 125, 141)
         if ui.pulseTween then ui.pulseTween:Cancel(); ui.pulseTween = nil end
-        ui.light.BackgroundTransparency = 0
+        ui.statusDot.BackgroundTransparency = 0
         if running then
-            ui.pulseTween = TweenService:Create(ui.light, TweenInfo.new(
-                0.85, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
+            ui.pulseTween = TweenService:Create(ui.statusDot, TweenInfo.new(
+                0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true
             ), { BackgroundTransparency = 0.7 })
             ui.pulseTween:Play()
         end
